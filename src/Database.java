@@ -38,6 +38,7 @@ public class Database implements AutoCloseable {
     private static final String HIDDEN = "hidden";
     private static final String PENDING = "pending";
     private static final String LAST_USER = "last_user";
+    private static final String LOCATION_PERMISSION = "location_permission";
 
     private final Connection connection;
 
@@ -292,14 +293,22 @@ public class Database implements AutoCloseable {
         }
         checkEmail(profile.getEmail());
         String email = profile.getEmail().trim();
+        Double latitude = profile.hasCoordinates() ? profile.getLatitude() : null;
+        Double longitude = profile.hasCoordinates() ? profile.getLongitude() : null;
         inTransaction(() -> {
-            update("INSERT INTO profiles (email, name, age, location) VALUES (?, ?, ?, ?)"
+            update("INSERT INTO profiles (email, name, age, location, latitude, longitude)"
+                    + " VALUES (?, ?, ?, ?, ?, ?)"
                     + " ON CONFLICT (email) DO UPDATE SET name = excluded.name,"
-                    + " age = excluded.age, location = excluded.location",
-                    email, profile.getName(), profile.getAge(), profile.getLocation());
+                    + " age = excluded.age, location = excluded.location,"
+                    + " latitude = excluded.latitude, longitude = excluded.longitude",
+                    email, profile.getName(), profile.getAge(), profile.getLocation(), latitude, longitude);
             for (String table : new String[] {"profile_diets", "profile_cuisines", "profile_tastes",
-                "profile_hidden_tags", "tag_weights"}) {
+                "profile_hidden_tags", "profile_flavors", "tag_weights"}) {
                 update("DELETE FROM " + table + " WHERE email = ?", email);
+            }
+            for (java.util.Map.Entry<String, Integer> flavor : profile.getFlavorProfile().entrySet()) {
+                update("INSERT INTO profile_flavors (email, flavor, level) VALUES (?, ?, ?)",
+                        email, flavor.getKey(), flavor.getValue());
             }
             update("DELETE FROM profile_restaurants WHERE email = ? AND list IN (?, ?)", email, FAVORITES, HIDDEN);
 
@@ -343,14 +352,24 @@ public class Database implements AutoCloseable {
         String key = email.trim();
         try {
             Profile profile;
-            try (PreparedStatement query = prepare(
-                    "SELECT email, name, age, location FROM profiles WHERE email = ?", key);
+            try (PreparedStatement query = prepare("SELECT email, name, age, location, latitude, longitude"
+                    + " FROM profiles WHERE email = ?", key);
                     ResultSet rows = query.executeQuery()) {
                 if (!rows.next()) {
                     return null;
                 }
                 profile = new Profile(rows.getString("name"), rows.getInt("age"), rows.getString("location"));
                 profile.setEmail(rows.getString("email"));
+                if (rows.getObject("latitude") != null && rows.getObject("longitude") != null) {
+                    profile.setCoordinates(rows.getDouble("latitude"), rows.getDouble("longitude"));
+                }
+            }
+            try (PreparedStatement query = prepare(
+                    "SELECT flavor, level FROM profile_flavors WHERE email = ?", key);
+                    ResultSet rows = query.executeQuery()) {
+                while (rows.next()) {
+                    profile.setFlavorLevel(rows.getString("flavor"), rows.getInt("level"));
+                }
             }
             for (String diet : strings("SELECT restriction FROM profile_diets WHERE email = ? ORDER BY rowid", key)) {
                 profile.addDietaryRestriction(diet);
@@ -482,6 +501,89 @@ public class Database implements AutoCloseable {
         return ratings;
     }
 
+    // ---------------------------------------------------------------- Profile photo
+
+    /**
+     * Saves the user's profile photo.
+     *
+     * @param imageBytes the image file's bytes (e.g. a PNG)
+     * @throws IllegalArgumentException if imageBytes is empty or there's no
+     *                                  profile for the email
+     */
+    public void savePhoto(String email, byte[] imageBytes) {
+        requireProfile(email);
+        if (imageBytes == null || imageBytes.length == 0) {
+            throw new IllegalArgumentException("Photo cannot be empty");
+        }
+        try {
+            update("UPDATE profiles SET photo = ? WHERE email = ?", imageBytes, email.trim());
+        }
+        catch (SQLException e) {
+            throw error(e);
+        }
+    }
+
+    /**
+     * @return the user's profile photo bytes, or null if they haven't added
+     *         one
+     */
+    public byte[] loadPhoto(String email) {
+        if (email == null || email.isBlank()) {
+            return null;
+        }
+        try (PreparedStatement query = prepare("SELECT photo FROM profiles WHERE email = ?", email.trim());
+                ResultSet rows = query.executeQuery()) {
+            return rows.next() ? rows.getBytes("photo") : null;
+        }
+        catch (SQLException e) {
+            throw error(e);
+        }
+    }
+
+    /**
+     * Deletes the user's profile photo.
+     */
+    public void removePhoto(String email) {
+        if (email == null || email.isBlank()) {
+            return;
+        }
+        try {
+            update("UPDATE profiles SET photo = NULL WHERE email = ?", email.trim());
+        }
+        catch (SQLException e) {
+            throw error(e);
+        }
+    }
+
+    // ---------------------------------------------------------------- Location permission
+
+    /**
+     * Remembers whether the user allowed the app to use their live location.
+     */
+    public void setLocationPermission(boolean allowed) {
+        try {
+            update("INSERT OR REPLACE INTO app_settings (key, value) VALUES (?, ?)",
+                    LOCATION_PERMISSION, allowed ? "allowed" : "denied");
+        }
+        catch (SQLException e) {
+            throw error(e);
+        }
+    }
+
+    /**
+     * @return true if the user allowed live location, false if they said
+     *         no, or null if they haven't been asked yet
+     */
+    public Boolean getLocationPermission() {
+        try {
+            ArrayList<String> values = strings("SELECT value FROM app_settings WHERE key = ?", LOCATION_PERMISSION);
+            return values.isEmpty() ? null : "allowed".equals(values.get(0));
+        }
+        catch (SQLException e) {
+            throw error(e);
+        }
+    }
+
     // ---------------------------------------------------------------- Signed-in user
 
     /**
@@ -575,6 +677,9 @@ public class Database implements AutoCloseable {
         // Databases made before profiles had these columns get them added
         addColumnIfMissing(connection, "profiles", "age", "INTEGER NOT NULL DEFAULT 0");
         addColumnIfMissing(connection, "profiles", "location", "TEXT NOT NULL DEFAULT ''");
+        addColumnIfMissing(connection, "profiles", "latitude", "REAL");
+        addColumnIfMissing(connection, "profiles", "longitude", "REAL");
+        addColumnIfMissing(connection, "profiles", "photo", "BLOB");
         String profileKey = " email TEXT NOT NULL COLLATE NOCASE REFERENCES profiles(email) ON DELETE CASCADE,";
         try (Statement statement = connection.createStatement()) {
             statement.execute("CREATE TABLE IF NOT EXISTS profile_diets (" + profileKey
@@ -586,6 +691,10 @@ public class Database implements AutoCloseable {
             statement.execute("CREATE TABLE IF NOT EXISTS profile_tastes (" + profileKey
                     + " tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,"
                     + " PRIMARY KEY (email, tag_id))");
+            statement.execute("CREATE TABLE IF NOT EXISTS profile_flavors (" + profileKey
+                    + " flavor TEXT NOT NULL,"
+                    + " level INTEGER NOT NULL CHECK (level BETWEEN 1 AND 5),"
+                    + " PRIMARY KEY (email, flavor))");
             statement.execute("CREATE TABLE IF NOT EXISTS profile_hidden_tags (" + profileKey
                     + " tag_id INTEGER NOT NULL REFERENCES tags(id) ON DELETE CASCADE,"
                     + " PRIMARY KEY (email, tag_id))");

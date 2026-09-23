@@ -1,4 +1,5 @@
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 
 /**
  * Collects the onboarding answers used to build a user profile.
@@ -10,6 +11,7 @@ public class Survey {
     private String location;
     private final ArrayList<String> dietaryRestrictions;
     private final ArrayList<Tag> tags;
+    private final LinkedHashMap<String, Integer> flavorLevels;
 
     public Survey() {
         this("", 0, "");
@@ -22,6 +24,27 @@ public class Survey {
         this.location = location == null ? "" : location.trim();
         this.dietaryRestrictions = new ArrayList<>();
         this.tags = new ArrayList<>();
+        this.flavorLevels = new LinkedHashMap<>();
+    }
+
+    /**
+     * Records how much the user likes a flavor.
+     *
+     * @param flavor one of Profile.FLAVORS, e.g. "Salty"
+     * @param level  1 (not a fan) to 5 (love it)
+     * @throws IllegalArgumentException if the flavor or level is invalid
+     */
+    public void setFlavorLevel(String flavor, int level) {
+        String key = Profile.checkFlavor(flavor);
+        Profile.checkFlavorLevel(level);
+        flavorLevels.put(key, level);
+    }
+
+    /**
+     * @return the flavor answers given so far
+     */
+    public LinkedHashMap<String, Integer> getFlavorLevels() {
+        return new LinkedHashMap<>(flavorLevels);
     }
 
     public String getName() {
@@ -104,6 +127,7 @@ public class Survey {
         for (Tag tag : tags) {
             profile.addTasteTag(tag);
         }
+        flavorLevels.forEach(profile::setFlavorLevel);
         return profile;
     }
 
@@ -131,5 +155,7 @@ public class Survey {
         this.dietaryRestrictions.addAll(profile.getDietaryRestrictions());
         this.tags.clear();
         this.tags.addAll(profile.getTasteProfile());
+        this.flavorLevels.clear();
+        this.flavorLevels.putAll(profile.getFlavorProfile());
     }
 }

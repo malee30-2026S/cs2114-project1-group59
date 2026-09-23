@@ -1,36 +1,50 @@
 import java.awt.BorderLayout;
 import java.awt.CardLayout;
-import java.awt.Component;
+import java.awt.Color;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
+import java.awt.Graphics2D;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
 import java.awt.GridLayout;
 import java.awt.Insets;
+import java.awt.RenderingHints;
 import java.awt.event.WindowAdapter;
 import java.awt.event.WindowEvent;
+import java.awt.image.BufferedImage;
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ExecutionException;
+import java.util.function.Consumer;
+import javax.imageio.ImageIO;
 import javax.swing.BorderFactory;
 import javax.swing.Box;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
+import javax.swing.JFileChooser;
 import javax.swing.JFrame;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
+import javax.swing.SwingWorker;
 import javax.swing.border.EmptyBorder;
+import javax.swing.filechooser.FileNameExtensionFilter;
 
 /**
  * Handles all UI: the starting survey, the home page with recommendations,
- * search, the profile page, and the post-visit survey.
+ * search, the profile page, and the post-visit survey page.
  */
 public class Window
     extends JFrame
@@ -40,26 +54,37 @@ public class Window
     private static String RESULTS_CARD = "RESULTS";
     private static String SURVEY_CARD = "SURVEY";
     private static String PROFILE_CARD = "PROFILE";
+    private static String POST_VISIT_CARD = "POST_VISIT";
 
-    /** Where profiles, ratings, and visits are saved between runs. */
+    /** Where profiles, ratings, visits, and photos are saved between runs. */
     private static final String DATABASE_FILE = "hungryhokie.db";
     /** How many restaurants the "Recommended for you" section shows. */
     private static final int TOP_PICKS = 5;
+    /** Profile photos are cropped square and shrunk to this many pixels. */
+    private static final int PHOTO_SIZE = 256;
+    private static final long MAX_PHOTO_BYTES = 15L * 1024 * 1024;
     private static final String ANY_CUISINE = "Any cuisine";
     private static final String[] PRICE_CHOICES =
         {"Any price", "$", "$$", "$$$", "$$$$"};
+    private static final String CURRENT_LOCATION = "Current location";
     private static final String[] LOCATIONS =
-        {"Blacksburg", "Christiansburg", "Roanoke", "Other"};
+        {CURRENT_LOCATION, "Blacksburg", "Christiansburg", "Roanoke", "Other"};
+    /** Towns you can pick instead of live location, and where distances are measured from. */
+    private static final String[] TOWN_NAMES = {"Blacksburg", "Christiansburg", "Roanoke"};
+    private static final double[][] TOWN_COORDINATES =
+        {{37.2296, -80.4139}, {37.1299, -80.4089}, {37.2710, -79.9414}};
     private static final String NO_DIET = "None";
     private static final String[] DIETS =
         {NO_DIET, "Vegetarian", "Vegan", "Gluten-Free", "Dairy-Free"};
     private static final String[] CUISINES = {"Italian", "American", "Mexican",
         "Japanese", "Mediterranean", "Chinese", "Indian", "Vegan", "Thai", "Pizza", "BBQ"};
+    private static final String DISH_EXAMPLES = "tacos, sushi, pizza, curry, pad thai, or gyros";
     private static final String DOT = "  \u00B7  ";
 
     private CardLayout cardLayout;
     private JPanel mainPanel;
     private HashMap<String, JPanel> cards;
+    private String currentCard;
     private Moderator moderator;
     private Profile currentProfile;
     private Survey currentSurvey;
@@ -70,7 +95,12 @@ public class Window
     private Database database;
     private boolean returningUser;
     private String flashMessage;
+    private boolean flashIsError;
+    private String searchNote;
     private ArrayList<Restaurant> pendingVisits;
+    // Only used when the database can't be opened
+    private byte[] sessionPhoto;
+    private Boolean sessionLocationPermission;
 
     // ----------------------------------------------------------
     /**
@@ -90,8 +120,8 @@ public class Window
         this.pendingVisits = new ArrayList<>();
 
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-        setSize(1040, 780);
-        setMinimumSize(new Dimension(820, 600));
+        setSize(1060, 800);
+        setMinimumSize(new Dimension(860, 620));
         setLocationRelativeTo(null);
         getContentPane().setBackground(Theme.BACKGROUND);
         addWindowListener(new WindowAdapter()
@@ -115,9 +145,9 @@ public class Window
 
 
     /**
-     * Opens the app. If someone was signed in last time, it goes straight to
-     * their home page and asks how their last meals were. Otherwise it shows
-     * the starting survey.
+     * Opens the app. The starting survey only shows the first time; after
+     * that the app remembers who's signed in. If they clicked "Eat here"
+     * last time, the post-visit survey page comes up before the home page.
      */
     public void start()
     {
@@ -127,12 +157,28 @@ public class Window
             displaySurvey();
             return;
         }
-        currentProfile = saved;
         returningUser = true;
+        openFor(saved, true);
+    }
+
+
+    /**
+     * Makes a profile the current user and shows their first screen: the
+     * post-visit survey if they have visits to rate, otherwise home.
+     */
+    private void openFor(Profile profile, boolean refreshLocation)
+    {
+        currentProfile = profile;
         updateDistances();
         restoreReviews();
-        displayHomeScreen();
-        SwingUtilities.invokeLater(this::askAboutPendingVisits);
+        if (refreshLocation)
+        {
+            refreshLiveLocation();
+        }
+        if (!showPostVisitSurveys())
+        {
+            displayHomeScreen();
+        }
     }
 
 
@@ -189,6 +235,8 @@ public class Window
 
         JPanel content = pageContent();
         addFlashBanner(content);
+        content.add(Box.createVerticalStrut(14));
+        content.add(cravingCard());
 
         ArrayList<Restaurant> nearby = visibleRestaurants();
         ArrayList<Restaurant> ranked =
@@ -203,18 +251,56 @@ public class Window
         content.add(Box.createVerticalStrut(10));
         addRestaurantCards(content, topPicks, true, this::displayHomeScreen);
 
-        String where = coordinatesFor(currentProfile.getLocation()) == null
+        String near = CURRENT_LOCATION.equals(currentProfile.getLocation())
+            ? "you"
+            : currentProfile.getLocation();
+        String where = userCoordinates() == null
             ? "in the area"
-            : "near " + currentProfile.getLocation() + ", closest first";
+            : "near " + near + ", closest first";
         content.add(Theme.sectionHeader("Everything " + where));
         addRestaurantCards(content, nearby, false, this::displayHomeScreen);
 
         String greeting = (returningUser ? "Welcome back, " : "Welcome, ")
-            + currentProfile.getName() + DOT + currentProfile.getLocation();
+            + currentProfile.getName() + DOT + displayLocation();
         showScreen(
             HOME_CARD,
             Theme.headerBar("Hungry Hokie", greeting, searchNav(), profileNav()),
             Theme.scroll(content));
+    }
+
+
+    /** The "What are you craving?" box that searches by dish. */
+    private JComponent cravingCard()
+    {
+        Theme.RoundedPanel card = Theme.card(null);
+        card.setLayout(new BoxLayout(card, BoxLayout.Y_AXIS));
+
+        JTextField dishField = Theme.styleField(new JTextField(22));
+        JButton findButton = Theme.button("Find it", Theme.ButtonStyle.PRIMARY);
+        JPanel row = Theme.clear(new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 0)));
+        row.add(Theme.text("What are you craving?", Font.BOLD, 17, Theme.MAROON));
+        row.add(dishField);
+        row.add(findButton);
+        card.add(Theme.fullWidth(row));
+
+        JLabel hint = Theme.text("Search by dish, like " + DISH_EXAMPLES + ".", Font.PLAIN, 13, Theme.GRAY);
+        JPanel hintRow = Theme.clear(new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 6)));
+        hintRow.add(hint);
+        card.add(Theme.fullWidth(hintRow));
+
+        Runnable find = () -> {
+            String dish = dishField.getText();
+            if (dish.isBlank() || !moderator.validateInput(dish))
+            {
+                hint.setText("Type a dish with at least one letter, like tacos or pad thai.");
+                hint.setForeground(Theme.ERROR);
+                return;
+            }
+            openSearch(visibleRestaurants(), dish.trim());
+        };
+        findButton.addActionListener(e -> find.run());
+        dishField.addActionListener(e -> find.run());
+        return Theme.fullWidth(card);
     }
 
 
@@ -241,8 +327,8 @@ public class Window
      * @param rank
      *            shown as a "#1" badge, or 0 for none
      * @param refresh
-     *            redraws the current screen after the user eats at or hides
-     *            the restaurant
+     *            redraws the current screen after the user eats at or
+     *            blacklists the restaurant
      */
     private JComponent createRestaurantCard(Restaurant restaurant, int rank, Runnable refresh)
     {
@@ -259,7 +345,7 @@ public class Window
         titleRow.add(Theme.text(restaurant.getName(), Font.BOLD, 18, Theme.BLACK));
         if (currentProfile.getFavoriteRestaurants().contains(restaurant))
         {
-            titleRow.add(Theme.chip("You'd go back", Theme.SUCCESS_TINT, Theme.SUCCESS));
+            titleRow.add(Theme.chip("Favorite", Theme.SUCCESS_TINT, Theme.SUCCESS));
         }
         if (pendingVisits.contains(restaurant))
         {
@@ -304,13 +390,13 @@ public class Window
         JButton eatButton = Theme.button("Eat here", Theme.ButtonStyle.PRIMARY);
         eatButton.setToolTipText("We'll ask how it was the next time you open the app");
         eatButton.addActionListener(e -> handleEatHere(restaurant, refresh));
-        JButton hideButton = Theme.button("Hide", Theme.ButtonStyle.GHOST);
-        hideButton.setToolTipText("Add to your blacklist so it never shows up again");
-        hideButton.addActionListener(e -> handleHide(restaurant, refresh));
+        JButton blacklistButton = Theme.button("Blacklist", Theme.ButtonStyle.GHOST);
+        blacklistButton.setToolTipText("Never show this restaurant again");
+        blacklistButton.addActionListener(e -> handleBlacklist(restaurant, refresh));
 
         JPanel buttons = Theme.clear(new JPanel(new GridLayout(2, 1, 0, 6)));
         buttons.add(eatButton);
-        buttons.add(hideButton);
+        buttons.add(blacklistButton);
         JPanel buttonHolder = Theme.clear(new JPanel(new BorderLayout()));
         buttonHolder.add(buttons, BorderLayout.NORTH);
 
@@ -321,37 +407,38 @@ public class Window
 
 
     /**
-     * "Eat here" logs the visit. The post-visit survey pops up the next time
-     * the app opens. Without a database there's nowhere to remember the
-     * visit, so it asks right away instead.
+     * "Eat here" saves the visit as pending. The post-visit survey page comes
+     * up the next time the app opens, and finishing it clears the visit.
      */
     private void handleEatHere(Restaurant restaurant, Runnable refresh)
     {
-        if (database != null && !currentProfile.getEmail().isBlank())
+        if (database == null || currentProfile.getEmail().isBlank())
         {
-            try
-            {
-                database.addPendingVisit(currentProfile.getEmail(), restaurant);
-                flashMessage = "Enjoy " + restaurant.getName()
-                    + "! Next time you open Hungry Hokie, we'll ask how it was.";
-                refresh.run();
-                return;
-            }
-            catch (IllegalArgumentException | IllegalStateException e)
-            {
-                warn("Couldn't save the visit", e);
-            }
+            flash("Visits can't be saved right now, so we can't ask about this one later.", true);
+            refresh.run();
+            return;
         }
-        ratePendingVisit(restaurant);
+        try
+        {
+            database.addPendingVisit(currentProfile.getEmail(), restaurant);
+            flash("Enjoy " + restaurant.getName()
+                + "! Next time you open Hungry Hokie, we'll ask how it was.");
+        }
+        catch (IllegalArgumentException | IllegalStateException e)
+        {
+            warn("Couldn't save the visit", e);
+            flash("Couldn't save that visit. Please try again.", true);
+        }
         refresh.run();
     }
 
 
-    private void handleHide(Restaurant restaurant, Runnable refresh)
+    private void handleBlacklist(Restaurant restaurant, Runnable refresh)
     {
         currentProfile.addToBlacklist(restaurant);
         saveProfile();
-        flashMessage = "Hid " + restaurant.getName() + ". You can unhide it from My Profile.";
+        flash("Blacklisted " + restaurant.getName()
+            + ". You can take it off your blacklist on My Profile.");
         refresh.run();
     }
 
@@ -359,57 +446,71 @@ public class Window
     // ---------------------------------------------------------------- Post-visit survey
 
     /**
-     * Shows the post-visit survey for every restaurant the user said they'd
-     * eat at last time.
+     * Shows the post-visit survey page if the user clicked "Eat here" in an
+     * earlier session.
+     *
+     * @return true if the page is now showing
      */
-    private void askAboutPendingVisits()
+    private boolean showPostVisitSurveys()
     {
         refreshPendingVisits();
         if (pendingVisits.isEmpty())
         {
-            return;
+            return false;
         }
-        int rated = 0;
-        for (Restaurant restaurant : new ArrayList<>(pendingVisits))
-        {
-            if (ratePendingVisit(restaurant) == PostVisitDialog.Choice.SUBMITTED)
-            {
-                rated++;
-            }
-        }
-        if (rated > 0)
-        {
-            flashMessage = "Thanks! Your " + (rated == 1 ? "rating" : rated + " ratings")
-                + " updated your recommendations.";
-        }
-        displayHomeScreen();
+        showPostVisitPage(new ArrayList<>(pendingVisits), 0, 0);
+        return true;
     }
 
 
     /**
-     * Shows the post-visit survey for one restaurant and applies the answer.
+     * Shows one post-visit survey page, then the next, then home.
      */
-    private PostVisitDialog.Choice ratePendingVisit(Restaurant restaurant)
+    private void showPostVisitPage(ArrayList<Restaurant> visits, int index, int rated)
     {
-        PostVisitDialog dialog = new PostVisitDialog(this, restaurant, moderator);
-        dialog.setVisible(true);
-        PostVisitDialog.Choice choice = dialog.getChoice();
-        if (choice == PostVisitDialog.Choice.SUBMITTED)
+        if (index >= visits.size())
         {
-            applyRating(restaurant, dialog.getStars(), dialog.getReview(), dialog.wouldGoBack());
+            if (rated > 0)
+            {
+                flash("Thanks! Your " + (rated == 1 ? "rating" : rated + " ratings")
+                    + " updated your recommendations.");
+            }
+            displayHomeScreen();
+            return;
         }
-        if (choice != PostVisitDialog.Choice.LATER && database != null)
+        Restaurant restaurant = visits.get(index);
+        PostVisitPage page = new PostVisitPage(restaurant, index + 1, visits.size(), moderator,
+            (finished, choice) -> {
+                if (choice == PostVisitPage.Choice.SUBMITTED)
+                {
+                    applyRating(restaurant, finished.getStars(), finished.getReview(),
+                        finished.wouldGoBack());
+                }
+                if (choice != PostVisitPage.Choice.LATER)
+                {
+                    clearPendingVisit(restaurant);
+                }
+                int nowRated = rated + (choice == PostVisitPage.Choice.SUBMITTED ? 1 : 0);
+                showPostVisitPage(visits, index + 1, nowRated);
+            });
+        showCard(POST_VISIT_CARD, page);
+    }
+
+
+    private void clearPendingVisit(Restaurant restaurant)
+    {
+        if (database == null)
         {
-            try
-            {
-                database.removePendingVisit(currentProfile.getEmail(), restaurant);
-            }
-            catch (IllegalStateException e)
-            {
-                warn("Couldn't clear the visit", e);
-            }
+            return;
         }
-        return choice;
+        try
+        {
+            database.removePendingVisit(currentProfile.getEmail(), restaurant);
+        }
+        catch (IllegalStateException e)
+        {
+            warn("Couldn't clear the visit", e);
+        }
     }
 
 
@@ -467,20 +568,48 @@ public class Window
      */
     public void displaySearchResults(ArrayList<Restaurant> results)
     {
-        refreshPendingVisits();
+        openSearch(results, "");
+    }
 
-        JTextField nameField = Theme.styleField(new JTextField(12));
-        JComboBox<String> cuisineCombo = Theme.styleCombo(new JComboBox<>(cuisineChoices()));
-        JComboBox<String> priceCombo = Theme.styleCombo(new JComboBox<>(PRICE_CHOICES));
-        JTextField milesField = Theme.styleField(new JTextField(6));
+
+    /** The search screen's inputs, so a search can be re-run. */
+    private static class SearchForm
+    {
+        private JTextField name;
+        private JTextField dish;
+        private JComboBox<String> cuisine;
+        private JComboBox<String> price;
+        private JTextField miles;
+        private JLabel error;
+        private JPanel results;
+    }
+
+
+    /**
+     * Opens the search screen.
+     *
+     * @param dish
+     *            a dish to search for right away, or "" for none
+     */
+    private void openSearch(ArrayList<Restaurant> results, String dish)
+    {
+        refreshPendingVisits();
+        SearchForm form = new SearchForm();
+        form.name = Theme.styleField(new JTextField(10));
+        form.dish = Theme.styleField(new JTextField(dish, 10));
+        form.cuisine = Theme.styleCombo(new JComboBox<>(cuisineChoices()));
+        form.price = Theme.styleCombo(new JComboBox<>(PRICE_CHOICES));
+        form.miles = Theme.styleField(new JTextField(5));
+        form.error = Theme.text(" ", Font.BOLD, 13, Theme.ERROR);
+        form.results = Theme.clear(new JPanel(new BorderLayout()));
 
         Theme.RoundedPanel filters = Theme.card(new GridBagLayout());
         GridBagConstraints c = new GridBagConstraints();
         c.fill = GridBagConstraints.HORIZONTAL;
         c.weightx = 1;
         c.insets = new Insets(3, 6, 3, 6);
-        String[] labels = {"Name contains", "Cuisine", "Max price", "Max distance (miles)"};
-        JComponent[] inputs = {nameField, cuisineCombo, priceCombo, milesField};
+        String[] labels = {"Name contains", "Dish (like tacos)", "Cuisine", "Max price", "Max distance (miles)"};
+        JComponent[] inputs = {form.name, form.dish, form.cuisine, form.price, form.miles};
         for (int i = 0; i < inputs.length; i++)
         {
             c.gridx = i;
@@ -490,41 +619,45 @@ public class Window
             filters.add(inputs[i], c);
         }
 
-        JLabel errorLabel = Theme.text(" ", Font.BOLD, 13, Theme.ERROR);
         JButton searchButton = Theme.button("Search", Theme.ButtonStyle.PRIMARY);
         JButton clearButton = Theme.button("Clear", Theme.ButtonStyle.GHOST);
         JPanel actions = Theme.clear(new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0)));
         actions.add(searchButton);
         actions.add(clearButton);
         actions.add(Box.createHorizontalStrut(8));
-        actions.add(errorLabel);
+        actions.add(form.error);
         c.gridx = 0;
         c.gridy = 2;
         c.gridwidth = inputs.length;
         c.insets = new Insets(12, 0, 0, 0);
         filters.add(actions, c);
 
-        JPanel resultsHolder = Theme.clear(new JPanel(new BorderLayout()));
         Runnable showAll = () -> displaySearchResults(visibleRestaurants());
-        resultsHolder.add(Theme.scroll(createResultsView(results, showAll)), BorderLayout.CENTER);
+        searchNote = "";
+        form.results.add(Theme.scroll(createResultsView(results, showAll)), BorderLayout.CENTER);
 
         JPanel body = new JPanel(new BorderLayout(0, 12));
         body.setBackground(Theme.BACKGROUND);
         body.setBorder(new EmptyBorder(18, 24, 0, 24));
         body.add(filters, BorderLayout.NORTH);
-        body.add(resultsHolder, BorderLayout.CENTER);
+        body.add(form.results, BorderLayout.CENTER);
 
-        Runnable search = () -> runSearch(
-            nameField, cuisineCombo, priceCombo, milesField, errorLabel, resultsHolder);
+        Runnable search = () -> runSearch(form);
         searchButton.addActionListener(e -> search.run());
-        nameField.addActionListener(e -> search.run());
-        milesField.addActionListener(e -> search.run());
+        form.name.addActionListener(e -> search.run());
+        form.dish.addActionListener(e -> search.run());
+        form.miles.addActionListener(e -> search.run());
         clearButton.addActionListener(e -> showAll.run());
 
         showScreen(
             RESULTS_CARD,
-            Theme.headerBar("Search", "Filter by name, cuisine, price, and distance", homeNav(), profileNav()),
+            Theme.headerBar("Search", "Filter by name, dish, cuisine, price, and distance",
+                homeNav(), profileNav()),
             body);
+        if (!dish.isBlank())
+        {
+            search.run();
+        }
     }
 
 
@@ -532,37 +665,26 @@ public class Window
      * Runs the search with whatever filters are filled in. Bad input shows a
      * red message instead of crashing.
      */
-    private void runSearch(
-        JTextField nameField,
-        JComboBox<String> cuisineCombo,
-        JComboBox<String> priceCombo,
-        JTextField milesField,
-        JLabel errorLabel,
-        JPanel resultsHolder)
+    private void runSearch(SearchForm form)
     {
         ArrayList<Restaurant> results;
         try
         {
-            results = filterRestaurants(
-                nameField.getText(),
-                (String)cuisineCombo.getSelectedItem(),
-                priceCombo.getSelectedIndex(),
-                milesField.getText());
+            results = filterRestaurants(form);
         }
         catch (IllegalArgumentException e)
         {
-            errorLabel.setText(e.getMessage());
+            form.error.setText(e.getMessage());
             return;
         }
-        errorLabel.setText(" ");
+        form.error.setText(" ");
         refreshPendingVisits();
 
-        Runnable refresh = () -> runSearch(
-            nameField, cuisineCombo, priceCombo, milesField, errorLabel, resultsHolder);
-        resultsHolder.removeAll();
-        resultsHolder.add(Theme.scroll(createResultsView(results, refresh)), BorderLayout.CENTER);
-        resultsHolder.revalidate();
-        resultsHolder.repaint();
+        form.results.removeAll();
+        form.results.add(Theme.scroll(createResultsView(results, () -> runSearch(form))),
+            BorderLayout.CENTER);
+        form.results.revalidate();
+        form.results.repaint();
     }
 
 
@@ -572,13 +694,11 @@ public class Window
      * @throws IllegalArgumentException
      *             with a message for the user if any filter is invalid
      */
-    private ArrayList<Restaurant> filterRestaurants(
-        String name,
-        String cuisine,
-        int maxPrice,
-        String milesText)
+    private ArrayList<Restaurant> filterRestaurants(SearchForm form)
     {
+        searchNote = "";
         ArrayList<Restaurant> results = visibleRestaurants();
+        String name = form.name.getText();
         if (!name.isBlank())
         {
             if (!moderator.validateInput(name))
@@ -588,14 +708,37 @@ public class Window
             }
             results = new Search(results).searchByName(name);
         }
+        String dish = form.dish.getText();
+        if (!dish.isBlank())
+        {
+            if (!moderator.validateInput(dish))
+            {
+                throw new IllegalArgumentException("Dishes need at least one letter or number.");
+            }
+            ArrayList<String> cuisines = Search.cuisinesForDish(dish);
+            results = new Search(results).searchByDish(dish);
+            if (cuisines.isEmpty() && results.isEmpty())
+            {
+                throw new IllegalArgumentException(
+                    "We don't know \"" + dish.trim() + "\" yet. Try " + DISH_EXAMPLES + ".");
+            }
+            if (!cuisines.isEmpty())
+            {
+                searchNote = "Places that usually serve " + dish.trim() + ": "
+                    + String.join(", ", cuisines) + " restaurants";
+            }
+        }
+        String cuisine = (String)form.cuisine.getSelectedItem();
         if (cuisine != null && !cuisine.equals(ANY_CUISINE))
         {
             results = new Search(results).searchByTag(new Tag(cuisine));
         }
+        int maxPrice = form.price.getSelectedIndex();
         if (maxPrice > 0)
         {
             results = new Search(results).searchByPrice(maxPrice);
         }
+        String milesText = form.miles.getText();
         if (!milesText.isBlank())
         {
             double miles;
@@ -623,6 +766,10 @@ public class Window
         view.add(Theme.fullWidth(Theme.text(
             count + " restaurant" + (count == 1 ? "" : "s") + " found",
             Font.BOLD, 14, Theme.GRAY_DARK)));
+        if (searchNote != null && !searchNote.isBlank())
+        {
+            view.add(Theme.fullWidth(Theme.text(searchNote, Font.PLAIN, 13, Theme.GRAY)));
+        }
         view.add(Box.createVerticalStrut(8));
         addRestaurantCards(view, results, false, refresh);
         return view;
@@ -645,85 +792,59 @@ public class Window
     // ---------------------------------------------------------------- Profile
 
     /**
-     * Displays everything the app has saved about the user.
+     * Displays everything the app has saved about the user: photo, name,
+     * age, flavor profile, favorite cuisines, favorite restaurants,
+     * blacklisted restaurants, and their rating history.
      */
     public void displayProfile()
     {
         refreshPendingVisits();
         JPanel content = pageContent();
         addFlashBanner(content);
+        content.add(Box.createVerticalStrut(16));
+        content.add(profileTopCard());
 
         content.add(Theme.sectionHeader("About you"));
-        Theme.RoundedPanel about = Theme.card(new GridBagLayout());
-        int row = 0;
-        addInfoRow(about, row++, "Name", Theme.text(currentProfile.getName(), Font.PLAIN, 15, Theme.BLACK));
-        addInfoRow(about, row++, "Email", Theme.text(currentProfile.getEmail(), Font.PLAIN, 15, Theme.BLACK));
-        addInfoRow(about, row++, "Age", Theme.text(
-            currentProfile.getAge() == 0 ? "Not set" : String.valueOf(currentProfile.getAge()),
-            Font.PLAIN, 15, Theme.BLACK));
-        addInfoRow(about, row++, "Location", Theme.text(currentProfile.getLocation(), Font.PLAIN, 15, Theme.BLACK));
-        String diets = currentProfile.getDietaryRestrictions().isEmpty()
-            ? "None"
-            : String.join(", ", currentProfile.getDietaryRestrictions());
-        addInfoRow(about, row++, "Dietary restriction", Theme.text(diets, Font.PLAIN, 15, Theme.BLACK));
-        JPanel likes = Theme.clear(new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0)));
+        content.add(aboutCard());
+
+        content.add(Theme.sectionHeader("Flavor profile"));
+        Theme.RoundedPanel flavors = Theme.card(new GridBagLayout());
+        addFlavorRows(flavors, 0, currentProfile.getFlavorProfile(), false, null);
+        content.add(Theme.fullWidth(flavors));
+
+        content.add(Theme.sectionHeader("Favorite cuisines"));
+        JPanel cuisineChips = Theme.clear(new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0)));
+        ArrayList<String> cuisineNames = new ArrayList<>();
         for (Tag tag : currentProfile.getTasteProfile())
         {
-            likes.add(Theme.chip(tag.getName(), Theme.MAROON_TINT, Theme.MAROON));
+            cuisineNames.add(tag.getName());
         }
         for (String cuisine : currentProfile.getFavoriteCuisines())
         {
-            likes.add(Theme.chip(cuisine, Theme.MAROON_TINT, Theme.MAROON));
-        }
-        addInfoRow(about, row++, "Favorite cuisine", likes);
-        String storage = database == null
-            ? "Not saved (the database couldn't be opened)"
-            : "Saved on this computer in " + DATABASE_FILE;
-        addInfoRow(about, row++, "Stored", Theme.text(storage, Font.PLAIN, 13, Theme.GRAY));
-        content.add(Theme.fullWidth(about));
-        content.add(Box.createVerticalStrut(10));
-
-        JButton editButton = Theme.button("Edit profile", Theme.ButtonStyle.SECONDARY);
-        editButton.addActionListener(e -> displaySurvey());
-        JButton signOutButton = Theme.button("Sign out", Theme.ButtonStyle.GHOST);
-        signOutButton.addActionListener(e -> signOut());
-        JPanel accountButtons = Theme.clear(new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0)));
-        accountButtons.add(editButton);
-        accountButtons.add(Box.createHorizontalStrut(10));
-        accountButtons.add(signOutButton);
-        content.add(Theme.fullWidth(accountButtons));
-
-        content.add(Theme.sectionHeader("What Hungry Hokie has learned from your ratings"));
-        content.add(learnedCard());
-
-        if (!pendingVisits.isEmpty())
-        {
-            content.add(Theme.sectionHeader("Waiting for your rating"));
-            JPanel pendingList = listPanel();
-            for (Restaurant restaurant : pendingVisits)
+            if (!cuisineNames.contains(cuisine))
             {
-                JButton rateButton = Theme.button("Rate now", Theme.ButtonStyle.SECONDARY);
-                rateButton.addActionListener(e -> {
-                    if (ratePendingVisit(restaurant) == PostVisitDialog.Choice.SUBMITTED)
-                    {
-                        flashMessage = "Thanks! Your rating updated your recommendations.";
-                    }
-                    displayProfile();
-                });
-                addListRow(pendingList, restaurant.getName(),
-                    "We'll ask how it was the next time you open the app", rateButton);
+                cuisineNames.add(cuisine);
             }
-            content.add(cardAround(pendingList));
+        }
+        if (cuisineNames.isEmpty())
+        {
+            content.add(messageCard("None yet. Pick one with Edit profile."));
+        }
+        else
+        {
+            for (String cuisine : cuisineNames)
+            {
+                cuisineChips.add(Theme.chip(cuisine, Theme.MAROON_TINT, Theme.MAROON));
+            }
+            content.add(cardAround(cuisineChips));
         }
 
-        content.add(Theme.sectionHeader("Your ratings"));
-        content.add(ratingsCard());
-
-        content.add(Theme.sectionHeader("Places you'd go back to"));
+        content.add(Theme.sectionHeader("Favorite restaurants"));
         ArrayList<Restaurant> favorites = currentProfile.getFavoriteRestaurants();
         if (favorites.isEmpty())
         {
-            content.add(messageCard("None yet. Check \"I'd go back here\" when you rate a place."));
+            content.add(messageCard(
+                "None yet. Check \"I'd go back here\" on the post-visit survey to add one."));
         }
         else
         {
@@ -735,34 +856,187 @@ public class Window
             content.add(cardAround(favoriteList));
         }
 
-        content.add(Theme.sectionHeader("Hidden restaurants"));
-        ArrayList<Restaurant> hidden = currentProfile.getBlacklist().getBlacklistedRestaurants();
-        if (hidden.isEmpty())
+        content.add(Theme.sectionHeader("Blacklisted restaurants"));
+        ArrayList<Restaurant> blacklisted = currentProfile.getBlacklist().getBlacklistedRestaurants();
+        if (blacklisted.isEmpty())
         {
-            content.add(messageCard("Nothing hidden. Use \"Hide\" on a restaurant you never want to see."));
+            content.add(messageCard(
+                "Your blacklist is empty. Click \"Blacklist\" on a restaurant you never want to see."));
         }
         else
         {
-            JPanel hiddenList = listPanel();
-            for (Restaurant restaurant : hidden)
+            JPanel blacklist = listPanel();
+            for (Restaurant restaurant : blacklisted)
             {
-                JButton unhideButton = Theme.button("Unhide", Theme.ButtonStyle.SECONDARY);
-                unhideButton.addActionListener(e -> {
+                JButton removeButton = Theme.button("Remove", Theme.ButtonStyle.SECONDARY);
+                removeButton.addActionListener(e -> {
                     currentProfile.getBlacklist().removeRestaurant(restaurant);
                     saveProfile();
-                    flashMessage = restaurant.getName() + " will show up again.";
+                    flash(restaurant.getName() + " is off your blacklist.");
                     displayProfile();
                 });
-                addListRow(hiddenList, restaurant.getName(), resolve(restaurant).getAddress(), unhideButton);
+                addListRow(blacklist, restaurant.getName(), resolve(restaurant).getAddress(), removeButton);
             }
-            content.add(cardAround(hiddenList));
+            content.add(cardAround(blacklist));
         }
+
+        if (!pendingVisits.isEmpty())
+        {
+            content.add(Theme.sectionHeader("Waiting for your rating"));
+            JPanel pendingList = listPanel();
+            for (Restaurant restaurant : pendingVisits)
+            {
+                addListRow(pendingList, restaurant.getName(),
+                    "We'll ask how it was the next time you open the app", null);
+            }
+            content.add(cardAround(pendingList));
+        }
+
+        content.add(Theme.sectionHeader("What Hungry Hokie has learned from your ratings"));
+        content.add(learnedCard());
+
+        content.add(Theme.sectionHeader("Your ratings"));
+        content.add(ratingsCard());
 
         showScreen(
             PROFILE_CARD,
             Theme.headerBar("My Profile", "Everything Hungry Hokie has saved about you",
                 homeNav(), searchNav()),
             Theme.scroll(content));
+    }
+
+
+    /** Photo, name, and email, with buttons to change the photo or sign out. */
+    private JComponent profileTopCard()
+    {
+        Theme.RoundedPanel card = Theme.card(new BorderLayout(22, 0));
+        card.setBorder(new EmptyBorder(20, 22, 20, 22));
+        byte[] photo = photoBytes();
+        card.add(new Theme.Avatar(toImage(photo), currentProfile.getName(), 112), BorderLayout.WEST);
+
+        JPanel middle = Theme.clear(new JPanel());
+        middle.setLayout(new BoxLayout(middle, BoxLayout.Y_AXIS));
+        middle.add(Theme.text(currentProfile.getName(), Font.BOLD, 26, Theme.BLACK));
+        middle.add(Theme.text(currentProfile.getEmail(), Font.PLAIN, 15, Theme.GRAY));
+        middle.add(Box.createVerticalStrut(12));
+        JPanel photoButtons = Theme.clear(new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0)));
+        JButton uploadButton = Theme.button(photo == null ? "Upload photo" : "Change photo",
+            Theme.ButtonStyle.SECONDARY);
+        uploadButton.addActionListener(e -> choosePhoto());
+        photoButtons.add(uploadButton);
+        if (photo != null)
+        {
+            JButton removeButton = Theme.button("Remove photo", Theme.ButtonStyle.GHOST);
+            removeButton.addActionListener(e -> removePhoto());
+            photoButtons.add(Box.createHorizontalStrut(8));
+            photoButtons.add(removeButton);
+        }
+        photoButtons.setAlignmentX(0);
+        middle.add(photoButtons);
+        JPanel middleHolder = Theme.clear(new JPanel(new GridBagLayout()));
+        GridBagConstraints left = new GridBagConstraints();
+        left.anchor = GridBagConstraints.WEST;
+        left.weightx = 1;
+        middleHolder.add(middle, left);
+        card.add(middleHolder, BorderLayout.CENTER);
+
+        JButton editButton = Theme.button("Edit profile", Theme.ButtonStyle.SECONDARY);
+        editButton.addActionListener(e -> displaySurvey());
+        JButton signOutButton = Theme.button("Sign out", Theme.ButtonStyle.GHOST);
+        signOutButton.addActionListener(e -> signOut());
+        JPanel accountButtons = Theme.clear(new JPanel(new GridLayout(2, 1, 0, 6)));
+        accountButtons.add(editButton);
+        accountButtons.add(signOutButton);
+        JPanel accountHolder = Theme.clear(new JPanel(new GridBagLayout()));
+        accountHolder.add(accountButtons);
+        card.add(accountHolder, BorderLayout.EAST);
+        return Theme.fullWidth(card);
+    }
+
+
+    private JComponent aboutCard()
+    {
+        Theme.RoundedPanel about = Theme.card(new GridBagLayout());
+        int row = 0;
+        addInfoRow(about, row++, "Name", Theme.text(currentProfile.getName(), Font.PLAIN, 15, Theme.BLACK));
+        addInfoRow(about, row++, "Age", Theme.text(
+            currentProfile.getAge() == 0 ? "Not set" : String.valueOf(currentProfile.getAge()),
+            Font.PLAIN, 15, Theme.BLACK));
+        addInfoRow(about, row++, "Email", Theme.text(currentProfile.getEmail(), Font.PLAIN, 15, Theme.BLACK));
+        addInfoRow(about, row++, "Location", Theme.text(displayLocation(), Font.PLAIN, 15, Theme.BLACK));
+
+        Boolean permission = locationPermission();
+        String access = Boolean.TRUE.equals(permission) ? "Allowed"
+            : Boolean.FALSE.equals(permission) ? "Not allowed" : "Not asked yet";
+        JPanel accessRow = Theme.clear(new JPanel(new FlowLayout(FlowLayout.LEFT, 0, 0)));
+        accessRow.add(Theme.text(access, Font.PLAIN, 15, Theme.BLACK));
+        accessRow.add(Box.createHorizontalStrut(14));
+        if (Boolean.TRUE.equals(permission))
+        {
+            JButton offButton = Theme.button("Turn off", Theme.ButtonStyle.GHOST);
+            offButton.addActionListener(e -> turnOffLocation());
+            accessRow.add(offButton);
+        }
+        else
+        {
+            JButton onButton = Theme.button("Use my current location", Theme.ButtonStyle.SECONDARY);
+            onButton.addActionListener(e -> turnOnLocation(onButton));
+            accessRow.add(onButton);
+        }
+        addInfoRow(about, row++, "Location access", accessRow);
+
+        String diets = currentProfile.getDietaryRestrictions().isEmpty()
+            ? "None"
+            : String.join(", ", currentProfile.getDietaryRestrictions());
+        addInfoRow(about, row++, "Dietary restriction", Theme.text(diets, Font.PLAIN, 15, Theme.BLACK));
+        String storage = database == null
+            ? "Not saved (the database couldn't be opened)"
+            : "Saved on this computer in " + DATABASE_FILE;
+        addInfoRow(about, row++, "Stored", Theme.text(storage, Font.PLAIN, 13, Theme.GRAY));
+        return Theme.fullWidth(about);
+    }
+
+
+    /**
+     * Adds one row per flavor: its name, five dots, and a word for the level.
+     *
+     * @param pickers
+     *            if not null, each editable picker is stored here by flavor
+     * @return the next free row
+     */
+    private static int addFlavorRows(
+        JPanel panel,
+        int row,
+        LinkedHashMap<String, Integer> levels,
+        boolean editable,
+        Map<String, Theme.LevelPicker> pickers)
+    {
+        for (String flavor : Profile.FLAVORS)
+        {
+            int level = levels.getOrDefault(flavor, Profile.DEFAULT_FLAVOR_LEVEL);
+            Theme.LevelPicker picker = new Theme.LevelPicker(level, editable, 22);
+            JLabel words = Theme.text(Theme.LevelPicker.WORDS[level], Font.PLAIN, 14, Theme.GRAY_DARK);
+            picker.setOnChange(() -> words.setText(Theme.LevelPicker.WORDS[picker.getStars()]));
+            if (pickers != null)
+            {
+                pickers.put(flavor, picker);
+            }
+
+            GridBagConstraints c = new GridBagConstraints();
+            c.gridy = row++;
+            c.anchor = GridBagConstraints.WEST;
+            c.insets = new Insets(5, 0, 5, 18);
+            c.gridx = 0;
+            JLabel name = Theme.text(flavor, Font.BOLD, 14, Theme.BLACK);
+            name.setPreferredSize(new Dimension(70, name.getPreferredSize().height));
+            panel.add(name, c);
+            c.gridx = 1;
+            panel.add(picker, c);
+            c.gridx = 2;
+            c.weightx = 1;
+            panel.add(words, c);
+        }
+        return row;
     }
 
 
@@ -812,8 +1086,7 @@ public class Window
     {
         if (database == null)
         {
-            return messageCard("Ratings are only kept while the app is open, because the database "
-                + "couldn't be opened.");
+            return messageCard("Ratings aren't saved because the database couldn't be opened.");
         }
         ArrayList<Rating> ratings;
         try
@@ -883,7 +1156,380 @@ public class Window
         currentProfile = new Profile();
         returningUser = false;
         flashMessage = null;
+        sessionPhoto = null;
         displaySurvey();
+    }
+
+
+    // ---------------------------------------------------------------- Profile photo
+
+    private void choosePhoto()
+    {
+        JFileChooser chooser = new JFileChooser();
+        chooser.setDialogTitle("Choose a photo of yourself");
+        chooser.addChoosableFileFilter(
+            new FileNameExtensionFilter("Photos (.jpg, .jpeg, .png)", "jpg", "jpeg", "png"));
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION)
+        {
+            return;
+        }
+        String problem = savePhoto(chooser.getSelectedFile());
+        if (problem == null)
+        {
+            flash("Profile photo updated.");
+        }
+        else
+        {
+            flash(problem, true);
+        }
+        displayProfile();
+    }
+
+
+    /**
+     * Checks, crops, and saves a profile photo.
+     *
+     * @return null if it worked, or a message saying what's wrong
+     */
+    private String savePhoto(File file)
+    {
+        if (file == null || !moderator.moderateReviewPhoto(file.getName()))
+        {
+            return "That file isn't a photo. Pick a .jpg or .png image.";
+        }
+        if (file.length() > MAX_PHOTO_BYTES)
+        {
+            return "That photo is too big. Pick one under 15 MB.";
+        }
+        BufferedImage image;
+        try
+        {
+            image = ImageIO.read(file);
+        }
+        catch (IOException e)
+        {
+            image = null;
+        }
+        if (image == null)
+        {
+            return "We couldn't open that photo. Try a different .jpg or .png.";
+        }
+        byte[] png = squarePng(image);
+        if (png == null)
+        {
+            return "We couldn't process that photo. Try a different one.";
+        }
+        if (database == null)
+        {
+            sessionPhoto = png;
+            return null;
+        }
+        try
+        {
+            database.savePhoto(currentProfile.getEmail(), png);
+            return null;
+        }
+        catch (IllegalArgumentException | IllegalStateException e)
+        {
+            warn("Couldn't save the photo", e);
+            return "Couldn't save your photo. Please try again.";
+        }
+    }
+
+
+    /** Crops a photo to a centered square and shrinks it to PHOTO_SIZE. */
+    private static byte[] squarePng(BufferedImage image)
+    {
+        int side = Math.min(image.getWidth(), image.getHeight());
+        int x = (image.getWidth() - side) / 2;
+        int y = (image.getHeight() - side) / 2;
+        BufferedImage square = new BufferedImage(PHOTO_SIZE, PHOTO_SIZE, BufferedImage.TYPE_INT_RGB);
+        Graphics2D g = square.createGraphics();
+        g.setColor(Color.WHITE);
+        g.fillRect(0, 0, PHOTO_SIZE, PHOTO_SIZE);
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+        g.drawImage(image, 0, 0, PHOTO_SIZE, PHOTO_SIZE, x, y, x + side, y + side, null);
+        g.dispose();
+        try
+        {
+            ByteArrayOutputStream out = new ByteArrayOutputStream();
+            ImageIO.write(square, "png", out);
+            return out.toByteArray();
+        }
+        catch (IOException e)
+        {
+            return null;
+        }
+    }
+
+
+    private void removePhoto()
+    {
+        sessionPhoto = null;
+        if (database != null)
+        {
+            try
+            {
+                database.removePhoto(currentProfile.getEmail());
+            }
+            catch (IllegalStateException e)
+            {
+                warn("Couldn't remove the photo", e);
+            }
+        }
+        flash("Profile photo removed.");
+        displayProfile();
+    }
+
+
+    private byte[] photoBytes()
+    {
+        if (database == null)
+        {
+            return sessionPhoto;
+        }
+        try
+        {
+            return database.loadPhoto(currentProfile.getEmail());
+        }
+        catch (IllegalStateException e)
+        {
+            warn("Couldn't load the photo", e);
+            return null;
+        }
+    }
+
+
+    private static BufferedImage toImage(byte[] bytes)
+    {
+        if (bytes == null)
+        {
+            return null;
+        }
+        try
+        {
+            return ImageIO.read(new ByteArrayInputStream(bytes));
+        }
+        catch (IOException e)
+        {
+            return null;
+        }
+    }
+
+
+    // ---------------------------------------------------------------- Live location
+
+    /**
+     * Asks the user before the app ever reads their location. Once they
+     * allow it, the answer is remembered; they can turn it off on My Profile.
+     *
+     * @return true if location access is allowed
+     */
+    private boolean askLocationPermission()
+    {
+        if (Boolean.TRUE.equals(locationPermission()))
+        {
+            return true;
+        }
+        boolean allowed = Theme.confirm(this, "Allow location access?",
+            "Hungry Hokie would like to use your current location to show how far away each "
+                + "restaurant is and recommend places near you.\n"
+                + "Your location stays on this computer. You can turn this off anytime on My Profile.",
+            "Allow", "Don't allow");
+        storeLocationPermission(allowed);
+        return allowed;
+    }
+
+
+    /**
+     * Asks permission if needed, then finds the user's live location in the
+     * background so the window doesn't freeze.
+     *
+     * @param busyButton
+     *            shows "Finding your location..." while it works
+     * @param onFound
+     *            gets {latitude, longitude}
+     * @param onFailed
+     *            gets a message for the user
+     */
+    private void requestLiveLocation(
+        JButton busyButton,
+        Consumer<double[]> onFound,
+        Consumer<String> onFailed)
+    {
+        if (!LocationFinder.isSupported())
+        {
+            onFailed.accept("Live location only works on Windows. Pick your town instead.");
+            return;
+        }
+        if (!askLocationPermission())
+        {
+            onFailed.accept("Location access is off, so pick your town instead.");
+            return;
+        }
+        String label = busyButton.getText();
+        busyButton.setEnabled(false);
+        busyButton.setText("Finding your location...");
+        new SwingWorker<double[], Void>()
+        {
+            @Override
+            protected double[] doInBackground()
+            {
+                return LocationFinder.findCurrentLocation();
+            }
+
+
+            @Override
+            protected void done()
+            {
+                busyButton.setEnabled(true);
+                busyButton.setText(label);
+                double[] found = foundLocation(this);
+                if (found == null)
+                {
+                    onFailed.accept("We couldn't find your location. Make sure location is on in "
+                        + "Windows settings, or pick your town.");
+                }
+                else
+                {
+                    onFound.accept(found);
+                }
+            }
+        }.execute();
+    }
+
+
+    /**
+     * Updates a returning user's live location in the background when the
+     * app opens, if they've allowed it.
+     */
+    private void refreshLiveLocation()
+    {
+        if (!CURRENT_LOCATION.equals(currentProfile.getLocation())
+            || !Boolean.TRUE.equals(locationPermission())
+            || !LocationFinder.isSupported())
+        {
+            return;
+        }
+        Profile user = currentProfile;
+        new SwingWorker<double[], Void>()
+        {
+            @Override
+            protected double[] doInBackground()
+            {
+                return LocationFinder.findCurrentLocation();
+            }
+
+
+            @Override
+            protected void done()
+            {
+                double[] found = foundLocation(this);
+                if (found == null || user != currentProfile)
+                {
+                    return;
+                }
+                currentProfile.setCoordinates(found[0], found[1]);
+                saveProfile();
+                updateDistances();
+                if (HOME_CARD.equals(currentCard))
+                {
+                    displayHomeScreen();
+                }
+            }
+        }.execute();
+    }
+
+
+    private static double[] foundLocation(SwingWorker<double[], Void> worker)
+    {
+        try
+        {
+            return worker.get();
+        }
+        catch (InterruptedException e)
+        {
+            Thread.currentThread().interrupt();
+            return null;
+        }
+        catch (ExecutionException e)
+        {
+            return null;
+        }
+    }
+
+
+    private void turnOnLocation(JButton button)
+    {
+        requestLiveLocation(button, found -> {
+            currentProfile.setLocation(CURRENT_LOCATION);
+            currentProfile.setCoordinates(found[0], found[1]);
+            saveProfile();
+            updateDistances();
+            flash("Using your current location.");
+            displayProfile();
+        }, problem -> {
+            flash(problem, true);
+            displayProfile();
+        });
+    }
+
+
+    private void turnOffLocation()
+    {
+        storeLocationPermission(false);
+        if (CURRENT_LOCATION.equals(currentProfile.getLocation()))
+        {
+            String town = currentProfile.hasCoordinates()
+                ? nearestTown(currentProfile.getLatitude(), currentProfile.getLongitude())
+                : null;
+            currentProfile.setLocation(town == null ? TOWN_NAMES[0] : town);
+            currentProfile.clearCoordinates();
+            saveProfile();
+            updateDistances();
+            flash("Location access is off. Distances are now measured from "
+                + currentProfile.getLocation() + ".");
+        }
+        else
+        {
+            flash("Location access is off.");
+        }
+        displayProfile();
+    }
+
+
+    private Boolean locationPermission()
+    {
+        if (database == null)
+        {
+            return sessionLocationPermission;
+        }
+        try
+        {
+            return database.getLocationPermission();
+        }
+        catch (IllegalStateException e)
+        {
+            warn("Couldn't load location permission", e);
+            return sessionLocationPermission;
+        }
+    }
+
+
+    private void storeLocationPermission(boolean allowed)
+    {
+        sessionLocationPermission = allowed;
+        if (database != null)
+        {
+            try
+            {
+                database.setLocationPermission(allowed);
+            }
+            catch (IllegalStateException e)
+            {
+                warn("Couldn't save location permission", e);
+            }
+        }
     }
 
 
@@ -892,7 +1538,6 @@ public class Window
     /** Displays the survey. */
     public void displaySurvey()
     {
-        currentSurvey = new Survey();
         boolean editing = !currentProfile.getName().isBlank();
 
         JTextField nameField = Theme.styleField(new JTextField(currentProfile.getName(), 28));
@@ -922,19 +1567,19 @@ public class Window
 
         Theme.RoundedPanel form = Theme.card(new GridBagLayout());
         form.setBorder(new EmptyBorder(24, 28, 24, 28));
-        GridBagConstraints bottom = new GridBagConstraints();
-        bottom.gridx = 0;
-        bottom.gridwidth = 2;
-        bottom.fill = GridBagConstraints.HORIZONTAL;
-        bottom.weightx = 1;
-        bottom.gridy = 0;
-        bottom.insets = new Insets(0, 0, 4, 0);
+        GridBagConstraints wide = new GridBagConstraints();
+        wide.gridx = 0;
+        wide.gridwidth = 3;
+        wide.fill = GridBagConstraints.HORIZONTAL;
+        wide.weightx = 1;
+        wide.gridy = 0;
+        wide.insets = new Insets(0, 0, 4, 0);
         form.add(Theme.text(editing ? "Update your profile" : "Tell us about you",
-            Font.BOLD, 22, Theme.MAROON), bottom);
-        bottom.gridy = 1;
-        bottom.insets = new Insets(0, 0, 18, 0);
+            Font.BOLD, 22, Theme.MAROON), wide);
+        wide.gridy = 1;
+        wide.insets = new Insets(0, 0, 18, 0);
         form.add(Theme.text("We use this to pick restaurants you'll like.",
-            Font.PLAIN, 14, Theme.GRAY), bottom);
+            Font.PLAIN, 14, Theme.GRAY), wide);
 
         int row = addFormField(form, 2, 0, 2, "Name", nameField);
         row = addFormField(form, row, 0, 2, "Email (so we remember your ratings next time)", emailField);
@@ -943,10 +1588,20 @@ public class Window
         addFormField(form, row, 0, 1, "Dietary restriction", dietaryCombo);
         row = addFormField(form, row, 1, 1, "Favorite cuisine", cuisineCombo);
 
-        bottom.gridy = row;
-        bottom.insets = new Insets(0, 0, 0, 0);
+        wide.gridy = row++;
+        wide.insets = new Insets(6, 0, 8, 0);
+        form.add(Theme.text("How much do you like each flavor?", Font.BOLD, 13, Theme.GRAY_DARK), wide);
+        JPanel flavorPanel = Theme.clear(new JPanel(new GridBagLayout()));
+        LinkedHashMap<String, Theme.LevelPicker> flavorPickers = new LinkedHashMap<>();
+        addFlavorRows(flavorPanel, 0, currentProfile.getFlavorProfile(), true, flavorPickers);
+        wide.gridy = row++;
+        wide.insets = new Insets(0, 0, 8, 0);
+        form.add(flavorPanel, wide);
+
+        wide.gridy = row++;
+        wide.insets = new Insets(0, 0, 0, 0);
         JLabel errorLabel = Theme.text(" ", Font.BOLD, 13, Theme.ERROR);
-        form.add(errorLabel, bottom);
+        form.add(errorLabel, wide);
 
         JButton submitButton = Theme.button(editing ? "Save changes" : "Find my food",
             Theme.ButtonStyle.PRIMARY);
@@ -959,11 +1614,11 @@ public class Window
             buttons.add(Box.createHorizontalStrut(10));
             buttons.add(cancelButton);
         }
-        bottom.gridy++;
-        bottom.insets = new Insets(10, 0, 0, 0);
-        form.add(buttons, bottom);
-        bottom.gridy++;
-        form.add(Box.createHorizontalStrut(480), bottom);
+        wide.gridy = row++;
+        wide.insets = new Insets(10, 0, 0, 0);
+        form.add(buttons, wide);
+        wide.gridy = row++;
+        form.add(Box.createHorizontalStrut(500), wide);
 
         submitButton.addActionListener(e -> {
             String name = nameField.getText();
@@ -992,38 +1647,33 @@ public class Window
                 errorLabel.setText("Please select an age.");
                 return;
             }
+            errorLabel.setText(" ");
 
-            currentSurvey = new Survey();
-            currentSurvey.setName(name.trim());
-            currentSurvey.setEmail(email.trim());
-            currentSurvey.setAge((Integer)ageValue);
-            currentSurvey.setLocation(location.trim());
-
+            Survey survey = new Survey();
+            survey.setName(name.trim());
+            survey.setEmail(email.trim());
+            survey.setAge((Integer)ageValue);
+            survey.setLocation(location.trim());
             String dietaryChoice = (String)dietaryCombo.getSelectedItem();
             if (dietaryChoice != null && !dietaryChoice.equals(NO_DIET))
             {
-                currentSurvey.addDietaryRestriction(dietaryChoice);
+                survey.addDietaryRestriction(dietaryChoice);
             }
-
             String cuisineChoice = (String)cuisineCombo.getSelectedItem();
             if (cuisineChoice != null && !cuisineChoice.trim().isEmpty())
             {
-                currentSurvey.addTag(cuisineChoice.trim());
+                survey.addTag(cuisineChoice.trim());
             }
+            flavorPickers.forEach((flavor, picker) -> survey.setFlavorLevel(flavor, picker.getStars()));
 
-            Profile newProfile = currentSurvey.toProfile();
-            mergeSavedData(newProfile);
-            currentProfile = newProfile;
-            saveProfile();
-            rememberSignedIn();
-            updateDistances();
-            restoreReviews();
-            flashMessage = editing ? "Profile saved." : null;
-            displayHomeScreen();
-            if (!editing)
+            if (CURRENT_LOCATION.equals(location))
             {
-                SwingUtilities.invokeLater(this::askAboutPendingVisits);
+                requestLiveLocation(submitButton,
+                    found -> finishSurvey(survey, editing, found),
+                    errorLabel::setText);
+                return;
             }
+            finishSurvey(survey, editing, null);
         });
 
         JPanel centered = new JPanel(new GridBagLayout());
@@ -1040,6 +1690,36 @@ public class Window
                 "Find your next favorite place to eat in Blacksburg and Christiansburg"),
             Theme.scroll(centered));
         nameField.requestFocusInWindow();
+    }
+
+
+    /**
+     * Turns the survey into the user's profile, keeping what the app already
+     * knew about their email, then opens their home page.
+     *
+     * @param liveCoordinates
+     *            {latitude, longitude} if they chose their current location
+     */
+    private void finishSurvey(Survey survey, boolean editing, double[] liveCoordinates)
+    {
+        currentSurvey = survey;
+        Profile newProfile = survey.toProfile();
+        if (liveCoordinates != null)
+        {
+            newProfile.setCoordinates(liveCoordinates[0], liveCoordinates[1]);
+        }
+        mergeSavedData(newProfile);
+        currentProfile = newProfile;
+        saveProfile();
+        rememberSignedIn();
+        if (editing)
+        {
+            updateDistances();
+            flash("Profile saved.");
+            displayProfile();
+            return;
+        }
+        openFor(newProfile, false);
     }
 
 
@@ -1079,7 +1759,7 @@ public class Window
 
     /**
      * Carries over what the app already knows about this email: learned
-     * preferences, favorites, and hidden restaurants.
+     * preferences, favorites, and blacklisted restaurants.
      */
     private void mergeSavedData(Profile newProfile)
     {
@@ -1222,12 +1902,12 @@ public class Window
     // ---------------------------------------------------------------- Helpers
 
     /**
-     * Measures every restaurant's distance from the user's town, or marks it
-     * unknown if we don't have coordinates for their location.
+     * Measures every restaurant's distance from the user, or marks it
+     * unknown if we don't know where they are.
      */
     private void updateDistances()
     {
-        double[] here = coordinatesFor(currentProfile.getLocation());
+        double[] here = userCoordinates();
         for (Restaurant restaurant : localRestaurants)
         {
             if (here == null || !restaurant.hasLocation())
@@ -1243,22 +1923,67 @@ public class Window
 
 
     /**
-     * @return {latitude, longitude} of the survey's location choices, or null
-     *         for "Other"
+     * @return {latitude, longitude} of the user's live location or chosen
+     *         town, or null if unknown
      */
-    private static double[] coordinatesFor(String location)
+    private double[] userCoordinates()
     {
-        switch (location == null ? "" : location.toLowerCase(Locale.ROOT))
+        String location = currentProfile.getLocation();
+        if (CURRENT_LOCATION.equals(location))
         {
-            case "blacksburg":
-                return new double[] {37.2296, -80.4139}; // Virginia Tech
-            case "christiansburg":
-                return new double[] {37.1299, -80.4089}; // downtown
-            case "roanoke":
-                return new double[] {37.2710, -79.9414}; // downtown
-            default:
-                return null;
+            return currentProfile.hasCoordinates()
+                ? new double[] {currentProfile.getLatitude(), currentProfile.getLongitude()}
+                : null;
         }
+        for (int i = 0; i < TOWN_NAMES.length; i++)
+        {
+            if (TOWN_NAMES[i].equalsIgnoreCase(location))
+            {
+                return TOWN_COORDINATES[i];
+            }
+        }
+        return null;
+    }
+
+
+    /**
+     * @return the user's location for display, like "Blacksburg" or "Your
+     *         location, near Blacksburg"
+     */
+    private String displayLocation()
+    {
+        String location = currentProfile.getLocation();
+        if (!CURRENT_LOCATION.equals(location))
+        {
+            return location;
+        }
+        if (!currentProfile.hasCoordinates())
+        {
+            return "Your location";
+        }
+        String town = nearestTown(currentProfile.getLatitude(), currentProfile.getLongitude());
+        return town == null ? "Your location" : "Your location, near " + town;
+    }
+
+
+    /**
+     * @return the closest town within 15 miles, or null if none are
+     */
+    private static String nearestTown(double latitude, double longitude)
+    {
+        String closest = null;
+        double closestMiles = 15;
+        for (int i = 0; i < TOWN_NAMES.length; i++)
+        {
+            double miles = DistanceCalculator.straightLineDistance(
+                latitude, longitude, TOWN_COORDINATES[i][0], TOWN_COORDINATES[i][1]);
+            if (miles < closestMiles)
+            {
+                closest = TOWN_NAMES[i];
+                closestMiles = miles;
+            }
+        }
+        return closest;
     }
 
 
@@ -1351,12 +2076,31 @@ public class Window
     }
 
 
+    private void flash(String message)
+    {
+        flash(message, false);
+    }
+
+
+    /**
+     * Shows a message at the top of the next screen that's drawn.
+     *
+     * @param error
+     *            true for a red problem message
+     */
+    private void flash(String message, boolean error)
+    {
+        flashMessage = message;
+        flashIsError = error;
+    }
+
+
     private void addFlashBanner(JPanel content)
     {
         if (flashMessage != null)
         {
             content.add(Box.createVerticalStrut(12));
-            content.add(Theme.banner(flashMessage));
+            content.add(Theme.banner(flashMessage, flashIsError));
             flashMessage = null;
         }
     }
@@ -1376,7 +2120,7 @@ public class Window
     }
 
 
-    private static JComponent textRow(String text, int style, java.awt.Color color)
+    private static JComponent textRow(String text, int style, Color color)
     {
         JPanel row = row();
         row.add(Theme.text(text, style, 14, color));
@@ -1437,10 +2181,10 @@ public class Window
     }
 
 
-    private static JComponent cardAround(JPanel list)
+    private static JComponent cardAround(JComponent inside)
     {
         Theme.RoundedPanel card = Theme.card(new BorderLayout());
-        card.add(list, BorderLayout.CENTER);
+        card.add(inside, BorderLayout.CENTER);
         return Theme.fullWidth(card);
     }
 
@@ -1467,6 +2211,7 @@ public class Window
         }
         mainPanel.add(panel, name);
         cardLayout.show(mainPanel, name);
+        currentCard = name;
         mainPanel.revalidate();
         mainPanel.repaint();
         setVisible(true);

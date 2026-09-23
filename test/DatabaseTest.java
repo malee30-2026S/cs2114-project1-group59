@@ -1,3 +1,4 @@
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -207,6 +208,65 @@ public class DatabaseTest {
         assertTrue(loaded.getFavoriteRestaurants().contains(chilis));
         assertTrue(loaded.isBlacklisted(subway));
         assertTrue(loaded.getBlacklist().getBlacklistedTags().contains(new Tag("sushi")));
+    }
+
+    @Test
+    public void flavorsAndLiveLocationRoundTrip() {
+        Profile profile = new Profile("Jaidev", 20, "Current location");
+        profile.setEmail(EMAIL);
+        profile.setFlavorLevel("Umami", 5);
+        profile.setCoordinates(37.23, -80.41);
+        db.saveProfile(profile);
+
+        Profile loaded = db.loadProfile(EMAIL);
+        assertEquals(5, loaded.getFlavorLevel("Umami"));
+        assertEquals(Profile.DEFAULT_FLAVOR_LEVEL, loaded.getFlavorLevel("Sweet"));
+        assertTrue(loaded.hasCoordinates());
+        assertEquals(37.23, loaded.getLatitude());
+
+        profile.clearCoordinates();
+        db.saveProfile(profile);
+        assertFalse(db.loadProfile(EMAIL).hasCoordinates());
+    }
+
+    // ------------------------------------------------------------ photo
+
+    @Test
+    public void photoIsSavedAndRemoved() {
+        db.saveProfile("jaidev", EMAIL);
+        assertNull(db.loadPhoto(EMAIL));
+        byte[] photo = {1, 2, 3, 4};
+        db.savePhoto(EMAIL, photo);
+        assertArrayEquals(photo, db.loadPhoto(EMAIL));
+
+        Profile profile = db.loadProfile(EMAIL);
+        db.saveProfile(profile);
+        assertArrayEquals(photo, db.loadPhoto(EMAIL), "saving the profile keeps the photo");
+
+        db.removePhoto(EMAIL);
+        assertNull(db.loadPhoto(EMAIL));
+    }
+
+    @Test
+    public void badPhotosAreRejected() {
+        db.saveProfile("jaidev", EMAIL);
+        assertThrows(IllegalArgumentException.class, () -> db.savePhoto(EMAIL, new byte[0]));
+        assertThrows(IllegalArgumentException.class, () -> db.savePhoto(EMAIL, null));
+        assertThrows(IllegalArgumentException.class, () -> db.savePhoto("nobody@vt.edu", new byte[] {1}));
+        assertNull(db.loadPhoto(""));
+    }
+
+    // ------------------------------------------------------------ location permission
+
+    @Test
+    public void locationPermissionIsRemembered() {
+        assertNull(db.getLocationPermission());
+        db.setLocationPermission(true);
+        db.close();
+        db = new Database(dbPath);
+        assertEquals(Boolean.TRUE, db.getLocationPermission());
+        db.setLocationPermission(false);
+        assertEquals(Boolean.FALSE, db.getLocationPermission());
     }
 
     @Test

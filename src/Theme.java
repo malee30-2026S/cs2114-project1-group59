@@ -2,6 +2,7 @@ import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Cursor;
+import java.awt.Dialog;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
@@ -17,7 +18,9 @@ import java.awt.event.FocusAdapter;
 import java.awt.event.FocusEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
+import java.awt.geom.Ellipse2D;
 import java.awt.geom.Path2D;
+import java.awt.image.BufferedImage;
 import java.util.Arrays;
 import java.util.List;
 import javax.swing.BorderFactory;
@@ -26,13 +29,16 @@ import javax.swing.ButtonModel;
 import javax.swing.JButton;
 import javax.swing.JComboBox;
 import javax.swing.JComponent;
+import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
 import javax.swing.JTextField;
 import javax.swing.Scrollable;
 import javax.swing.SwingConstants;
+import javax.swing.SwingUtilities;
 import javax.swing.UIManager;
+import javax.swing.WindowConstants;
 import javax.swing.border.Border;
 import javax.swing.border.EmptyBorder;
 
@@ -204,10 +210,64 @@ public final class Theme {
      * @return an orange-tinted message box, for confirmations
      */
     public static JComponent banner(String message) {
-        RoundedPanel banner = new RoundedPanel(new BorderLayout(), ORANGE_TINT, ORANGE, 14);
+        return banner(message, false);
+    }
+
+    /**
+     * @param error true for a red problem message instead of an orange one
+     * @return a tinted message box
+     */
+    public static JComponent banner(String message, boolean error) {
+        Color fill = error ? new Color(252, 232, 235) : ORANGE_TINT;
+        Color outline = error ? ERROR : ORANGE;
+        RoundedPanel banner = new RoundedPanel(new BorderLayout(), fill, outline, 14);
         banner.setBorder(new EmptyBorder(10, 16, 10, 16));
-        banner.add(text(message, Font.BOLD, 14, ORANGE_DARK), BorderLayout.CENTER);
+        banner.add(text(message, Font.BOLD, 14, error ? ERROR : ORANGE_DARK), BorderLayout.CENTER);
         return fullWidth(banner);
+    }
+
+    /**
+     * Asks a yes/no question in a small window styled like the app, and
+     * waits for the answer.
+     *
+     * @return true if the user picked the yes button
+     */
+    public static boolean confirm(Component parent, String title, String message, String yes, String no) {
+        java.awt.Window owner = parent instanceof java.awt.Window
+            ? (java.awt.Window)parent
+            : SwingUtilities.getWindowAncestor(parent);
+        JDialog dialog = new JDialog(owner, title, Dialog.ModalityType.APPLICATION_MODAL);
+        dialog.setDefaultCloseOperation(WindowConstants.DISPOSE_ON_CLOSE);
+        boolean[] answer = {false};
+
+        JPanel root = new JPanel(new BorderLayout());
+        root.setBackground(BACKGROUND);
+        root.add(headerBar(title, null), BorderLayout.NORTH);
+        JLabel body = text("<html><div style='width:380px'>" + message.replace("\n", "<br><br>")
+            + "</div></html>", Font.PLAIN, 15, BLACK);
+        body.setBorder(new EmptyBorder(20, 24, 12, 24));
+        root.add(body, BorderLayout.CENTER);
+
+        JButton yesButton = button(yes, ButtonStyle.PRIMARY);
+        JButton noButton = button(no, ButtonStyle.GHOST);
+        yesButton.addActionListener(e -> {
+            answer[0] = true;
+            dialog.dispose();
+        });
+        noButton.addActionListener(e -> dialog.dispose());
+        JPanel buttons = clear(new JPanel(new FlowLayout(FlowLayout.RIGHT, 10, 0)));
+        buttons.setBorder(new EmptyBorder(4, 24, 20, 24));
+        buttons.add(noButton);
+        buttons.add(yesButton);
+        root.add(buttons, BorderLayout.SOUTH);
+
+        dialog.setContentPane(root);
+        dialog.getRootPane().setDefaultButton(yesButton);
+        dialog.pack();
+        dialog.setResizable(false);
+        dialog.setLocationRelativeTo(owner);
+        dialog.setVisible(true);
+        return answer[0];
     }
 
     /**
@@ -412,9 +472,16 @@ public final class Theme {
             int lit = editable && hoverStars > 0 ? hoverStars : stars;
             for (int i = 0; i < 5; i++) {
                 g2.setColor(i < lit ? ORANGE : GRAY_LIGHT);
-                g2.fill(star(i * (starSize + GAP), 0, starSize));
+                g2.fill(symbol(i * (starSize + GAP), 0, starSize));
             }
             g2.dispose();
+        }
+
+        /**
+         * @return the shape drawn for each of the five steps
+         */
+        protected Shape symbol(double x, double y, double size) {
+            return star(x, y, size);
         }
 
         private static Shape star(double x, double y, double size) {
@@ -437,6 +504,86 @@ public final class Theme {
             }
             path.closePath();
             return path;
+        }
+    }
+
+    /** Five dots for picking a level from 1 to 5, like how much you like a flavor. */
+    public static class LevelPicker extends StarRating {
+        /** Words for levels 1 to 5 (index 0 is unused). */
+        public static final String[] WORDS = {"", "Not a fan", "A little", "It's okay", "Like it", "Love it"};
+
+        /**
+         * @param level    starting level, 1 to 5
+         * @param editable true if clicking changes the level
+         * @param dotSize  width of each dot in pixels
+         */
+        public LevelPicker(int level, boolean editable, int dotSize) {
+            super(level, editable, dotSize);
+        }
+
+        @Override
+        protected Shape symbol(double x, double y, double size) {
+            return new Ellipse2D.Double(x + size * 0.1, y + size * 0.1, size * 0.8, size * 0.8);
+        }
+    }
+
+    /** A round profile photo, or the user's initials if they haven't added one. */
+    public static class Avatar extends JComponent {
+        private final BufferedImage image;
+        private final String initials;
+        private final int size;
+
+        /**
+         * @param image the photo, or null to show initials
+         * @param name  the user's name, for the initials
+         * @param size  diameter in pixels
+         */
+        public Avatar(BufferedImage image, String name, int size) {
+            this.image = image;
+            this.initials = initialsOf(name);
+            this.size = size;
+            setOpaque(false);
+            Dimension dimension = new Dimension(size, size);
+            setPreferredSize(dimension);
+            setMinimumSize(dimension);
+            setMaximumSize(dimension);
+        }
+
+        private static String initialsOf(String name) {
+            StringBuilder letters = new StringBuilder();
+            for (String word : (name == null ? "" : name.trim()).split("\\s+")) {
+                if (!word.isEmpty() && letters.length() < 2) {
+                    letters.append(Character.toUpperCase(word.charAt(0)));
+                }
+            }
+            return letters.length() == 0 ? "?" : letters.toString();
+        }
+
+        @Override
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = smooth(g);
+            g2.setRenderingHint(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+            Ellipse2D.Double circle = new Ellipse2D.Double(2, 2, size - 4, size - 4);
+            if (image != null) {
+                Shape oldClip = g2.getClip();
+                g2.clip(circle);
+                g2.drawImage(image, 2, 2, size - 4, size - 4, null);
+                g2.setClip(oldClip);
+            }
+            else {
+                g2.setColor(MAROON);
+                g2.fill(circle);
+                g2.setColor(WHITE);
+                g2.setFont(font(Font.BOLD, Math.max(12, size * 2 / 5)));
+                java.awt.FontMetrics metrics = g2.getFontMetrics();
+                int x = (size - metrics.stringWidth(initials)) / 2;
+                int y = (size - metrics.getHeight()) / 2 + metrics.getAscent();
+                g2.drawString(initials, x, y);
+            }
+            g2.setColor(ORANGE);
+            g2.setStroke(new java.awt.BasicStroke(3f));
+            g2.draw(circle);
+            g2.dispose();
         }
     }
 

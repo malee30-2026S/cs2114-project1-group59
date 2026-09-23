@@ -92,7 +92,58 @@ public class ProfileSurveyDataTest {
         assertFalse(new Profile().isComplete());
     }
 
+    // ------------------------------------------------------------ Flavor profile
+
+    @Test
+    public void flavorsStartInTheMiddleAndCanBeChanged() {
+        Profile profile = new Profile("Ada");
+        assertEquals(Profile.DEFAULT_FLAVOR_LEVEL, profile.getFlavorLevel("Umami"));
+        profile.setFlavorLevel("umami", 5);
+        profile.setFlavorLevel("Bitter", 1);
+        assertEquals(5, profile.getFlavorLevel("UMAMI"));
+        assertEquals(java.util.Arrays.asList("Sweet", "Salty", "Umami", "Sour", "Bitter"),
+            new ArrayList<>(profile.getFlavorProfile().keySet()));
+    }
+
+    @Test
+    public void badFlavorsAreRejected() {
+        Profile profile = new Profile("Ada");
+        assertThrows(IllegalArgumentException.class, () -> profile.setFlavorLevel("Spicy", 3));
+        assertThrows(IllegalArgumentException.class, () -> profile.setFlavorLevel(null, 3));
+        assertThrows(IllegalArgumentException.class, () -> profile.setFlavorLevel("Sweet", 0));
+        assertThrows(IllegalArgumentException.class, () -> profile.setFlavorLevel("Sweet", 6));
+    }
+
+    // ------------------------------------------------------------ Live location
+
+    @Test
+    public void coordinatesCanBeSetAndCleared() {
+        Profile profile = new Profile("Ada");
+        assertFalse(profile.hasCoordinates());
+        profile.setCoordinates(37.2296, -80.4139);
+        assertTrue(profile.hasCoordinates());
+        assertEquals(37.2296, profile.getLatitude());
+        profile.clearCoordinates();
+        assertFalse(profile.hasCoordinates());
+    }
+
+    @Test
+    public void impossibleCoordinatesAreRejected() {
+        Profile profile = new Profile("Ada");
+        assertThrows(IllegalArgumentException.class, () -> profile.setCoordinates(91, 0));
+        assertThrows(IllegalArgumentException.class, () -> profile.setCoordinates(0, Double.NaN));
+    }
+
     // ------------------------------------------------------------ Survey
+
+    @Test
+    public void surveyCarriesFlavorsIntoProfile() {
+        Survey survey = new Survey("Sam", 24, "Blacksburg");
+        survey.setFlavorLevel("Sour", 5);
+        assertEquals(5, survey.toProfile().getFlavorLevel("Sour"));
+        assertEquals(Profile.DEFAULT_FLAVOR_LEVEL, survey.toProfile().getFlavorLevel("Sweet"));
+        assertThrows(IllegalArgumentException.class, () -> survey.setFlavorLevel("Sour", 9));
+    }
 
     @Test
     public void surveyCarriesEmailIntoProfileAndBack() {

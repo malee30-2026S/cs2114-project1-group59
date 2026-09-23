@@ -91,6 +91,39 @@ public class SearchTest {
         assertThrows(IllegalArgumentException.class, () -> search.searchByDistance(Integer.MAX_VALUE));
     }
 
+    // ------------------------------------------------------------ searchByDish
+
+    @Test
+    public void searchByDishFindsCuisinesThatServeIt() {
+        assertEquals(Arrays.asList(chilis, chipotle), search.searchByDish("Tacos"));
+        assertEquals(Arrays.asList(subway), search.searchByDish("turkey sub"));
+    }
+
+    @Test
+    public void menuMatchesComeFirst() {
+        mystery.addMenuItem("Breakfast Tacos");
+        assertEquals(Arrays.asList(mystery, chilis, chipotle), search.searchByDish("tacos"));
+    }
+
+    @Test
+    public void unknownDishFindsNothing() {
+        assertTrue(search.searchByDish("zzzz").isEmpty());
+        assertTrue(Search.cuisinesForDish("zzzz").isEmpty());
+    }
+
+    @Test
+    public void searchByBlankDishIsRejected() {
+        assertThrows(IllegalArgumentException.class, () -> search.searchByDish(" "));
+        assertThrows(IllegalArgumentException.class, () -> search.searchByDish(null));
+    }
+
+    @Test
+    public void cuisinesForDishKnowsCommonDishes() {
+        assertEquals(Arrays.asList("Thai"), Search.cuisinesForDish("Pad Thai"));
+        assertEquals(Arrays.asList("Pizza", "Italian"), Search.cuisinesForDish("pepperoni pizza"));
+        assertEquals(Arrays.asList("Mexican", "Seafood"), Search.cuisinesForDish("fish tacos"));
+    }
+
     // ------------------------------------------------------------ blacklist
 
     @Test
