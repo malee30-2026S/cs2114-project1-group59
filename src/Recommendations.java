@@ -65,14 +65,26 @@ public class Recommendations {
     }
 
     /**
-     * Ranks restaurants from best match to worst.
+     * Ranks restaurants from best match to worst. Restaurants on the user's
+     * blacklist are left out. Ties keep their original order, so passing a
+     * list sorted by distance breaks ties by closeness.
+     *
+     * @throws IllegalArgumentException if profile is null
      */
     public ArrayList<Restaurant> rankRestaurants(Profile profile, ArrayList<Restaurant> restaurants) {
+        if (profile == null) {
+            throw new IllegalArgumentException("Profile cannot be null");
+        }
         if (restaurants == null || restaurants.isEmpty()) {
             return new ArrayList<>();
         }
 
-        ArrayList<Restaurant> ranked = new ArrayList<>(restaurants);
+        ArrayList<Restaurant> ranked = new ArrayList<>();
+        for (Restaurant restaurant : restaurants) {
+            if (restaurant != null && !profile.isBlacklisted(restaurant)) {
+                ranked.add(restaurant);
+            }
+        }
         ranked.sort(Comparator.comparingDouble((Restaurant r) -> matchScore(r, profile)).reversed());
         return ranked;
     }

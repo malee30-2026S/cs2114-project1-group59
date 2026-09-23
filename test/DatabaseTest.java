@@ -180,6 +180,154 @@ public class DatabaseTest {
         assertTrue(db.getTagWeights("nobody@vt.edu").isEmpty());
     }
 
+    // ------------------------------------------------------------ saveProfile(Profile) / loadProfile
+
+    @Test
+    public void fullProfileRoundTrips() {
+        Profile profile = new Profile("Jaidev", 20, "Blacksburg");
+        profile.setEmail(EMAIL);
+        profile.addDietaryRestriction("Vegetarian");
+        profile.addFavoriteCuisine("Thai");
+        profile.addTasteTag(new Tag("Italian"));
+        profile.addTagWeight(new Tag("Pizza"), 1.5);
+        profile.addFavoriteRestaurant(chilis);
+        profile.addToBlacklist(subway);
+        profile.addToBlacklistTag(new Tag("Sushi"));
+        db.saveProfile(profile);
+
+        Profile loaded = db.loadProfile("JAIDEVG@VT.EDU");
+        assertNotNull(loaded);
+        assertEquals("Jaidev", loaded.getName());
+        assertEquals(20, loaded.getAge());
+        assertEquals("Blacksburg", loaded.getLocation());
+        assertEquals(Arrays.asList("Vegetarian"), loaded.getDietaryRestrictions());
+        assertEquals(Arrays.asList("Thai"), loaded.getFavoriteCuisines());
+        assertEquals(tags("Italian"), loaded.getTasteProfile());
+        assertEquals(1.5, loaded.getTagWeights().get(new Tag("pizza")));
+        assertTrue(loaded.getFavoriteRestaurants().contains(chilis));
+        assertTrue(loaded.isBlacklisted(subway));
+        assertTrue(loaded.getBlacklist().getBlacklistedTags().contains(new Tag("sushi")));
+    }
+
+    @Test
+    public void savingAgainReplacesOldLists() {
+        Profile profile = new Profile("Jaidev", 20, "Blacksburg");
+        profile.setEmail(EMAIL);
+        profile.addToBlacklist(subway);
+        db.saveProfile(profile);
+        profile.getBlacklist().removeRestaurant(subway);
+        db.saveProfile(profile);
+        assertFalse(db.loadProfile(EMAIL).isBlacklisted(subway));
+    }
+
+    @Test
+    public void loadMissingProfileReturnsNull() {
+        assertNull(db.loadProfile("nobody@vt.edu"));
+        assertNull(db.loadProfile(""));
+        assertNull(db.loadProfile(null));
+    }
+
+    @Test
+    public void badProfilesAreRejected() {
+        assertThrows(IllegalArgumentException.class, () -> db.saveProfile((Profile) null));
+        assertThrows(IllegalArgumentException.class, () -> db.saveProfile(new Profile("No Email")));
+        Profile noName = new Profile();
+        noName.setEmail(EMAIL);
+        assertThrows(IllegalArgumentException.class, () -> db.saveProfile(noName));
+    }
+
+    // ------------------------------------------------------------ pending visits
+
+    @Test
+    public void pendingVisitsAreRememberedUntilRemoved() {
+        db.saveProfile("jaidev", EMAIL);
+        db.addPendingVisit(EMAIL, chilis);
+        db.addPendingVisit(EMAIL, chilis);
+        db.addPendingVisit(EMAIL, subway);
+        assertEquals(Arrays.asList(chilis, subway), db.getPendingVisits(EMAIL));
+        assertTrue(db.removePendingVisit(EMAIL, chilis));
+        assertFalse(db.removePendingVisit(EMAIL, chilis));
+        assertEquals(Arrays.asList(subway), db.getPendingVisits(EMAIL));
+    }
+
+    @Test
+    public void pendingVisitsSurviveSavingTheProfile() {
+        Profile profile = new Profile("Jaidev", 20, "Blacksburg");
+        profile.setEmail(EMAIL);
+        db.saveProfile(profile);
+        db.addPendingVisit(EMAIL, chilis);
+        db.saveProfile(profile);
+        assertEquals(1, db.getPendingVisits(EMAIL).size());
+    }
+
+    @Test
+    public void badPendingVisitsAreRejected() {
+        db.saveProfile("jaidev", EMAIL);
+        assertThrows(IllegalArgumentException.class, () -> db.addPendingVisit("nobody@vt.edu", chilis));
+        assertThrows(IllegalArgumentException.class, () -> db.addPendingVisit(EMAIL, null));
+        assertTrue(db.getPendingVisits("").isEmpty());
+    }
+
+    // ------------------------------------------------------------ ratings
+
+    @Test
+    public void ratingsComeBackNewestFirst() {
+        db.saveProfile("jaidev", EMAIL);
+        db.saveRating(EMAIL, chilis, 4, "Good chips");
+        db.saveRating(EMAIL, subway, 2, "");
+        ArrayList<Rating> ratings = db.getRatings(EMAIL);
+        assertEquals(2, ratings.size());
+        assertEquals("Subway", ratings.get(0).getRestaurantName());
+        assertEquals(4, ratings.get(1).getStars());
+        assertEquals("Good chips", ratings.get(1).getReview());
+    }
+
+    @Test
+    public void badRatingsAreRejected() {
+        db.saveProfile("jaidev", EMAIL);
+        assertThrows(IllegalArgumentException.class, () -> db.saveRating(EMAIL, chilis, 0, ""));
+        assertThrows(IllegalArgumentException.class, () -> db.saveRating(EMAIL, chilis, 6, ""));
+        assertThrows(IllegalArgumentException.class, () -> db.saveRating("nobody@vt.edu", chilis, 3, ""));
+        assertTrue(db.getRatings(EMAIL).isEmpty());
+    }
+
+    // ------------------------------------------------------------ last user
+
+    @Test
+    public void lastUserIsRememberedAndCleared() {
+        assertNull(db.getLastUser());
+        db.saveProfile("jaidev", EMAIL);
+        db.setLastUser(EMAIL);
+        db.close();
+        db = new Database(dbPath);
+        assertEquals(EMAIL, db.getLastUser());
+        db.clearLastUser();
+        assertNull(db.getLastUser());
+    }
+
+    @Test
+    public void lastUserMustHaveAProfile() {
+        assertThrows(IllegalArgumentException.class, () -> db.setLastUser("nobody@vt.edu"));
+        assertThrows(IllegalArgumentException.class, () -> db.setLastUser(""));
+    }
+
+    // ------------------------------------------------------------ older database files
+
+    @Test
+    public void olderDatabaseFilesGetTheNewColumns() throws Exception {
+        String oldPath = folder.resolve("old.db").toString();
+        try (java.sql.Connection old = java.sql.DriverManager.getConnection("jdbc:sqlite:" + oldPath);
+                java.sql.Statement statement = old.createStatement()) {
+            statement.execute("CREATE TABLE profiles (email TEXT PRIMARY KEY COLLATE NOCASE, name TEXT NOT NULL)");
+            statement.execute("INSERT INTO profiles VALUES ('old@vt.edu', 'Old User')");
+        }
+        try (Database upgraded = new Database(oldPath)) {
+            Profile old = upgraded.loadProfile("old@vt.edu");
+            assertEquals("Old User", old.getName());
+            assertEquals(0, old.getAge());
+        }
+    }
+
     private static ArrayList<Tag> tags(String... names) {
         ArrayList<Tag> tags = new ArrayList<>();
         for (String name : names) {

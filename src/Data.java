@@ -82,24 +82,78 @@ public class Data {
     }
 
     /**
-     * Creates a small sample Yelp-style dataset for the Blacksburg/
-     * Christiansburg area so the app can show real restaurant objects without
-     * needing an external API at startup.
+     * Creates a sample dataset for the Blacksburg/Christiansburg area so the
+     * app can show real restaurant objects without needing an external API
+     * at startup.
+     *
+     * Names, cuisines, addresses, and coordinates come from OpenStreetMap.
+     * Price levels are estimates (fast food = $, sit-down = $$). The last
+     * four of the original picks weren't found on the map, so their price
+     * and distance are unknown.
      */
     public static Data loadYelpAreaData() {
-        ArrayList<String[]> rows = new ArrayList<>();
-        rows.add(new String[] {"The Cellar", "Italian", "11:00 AM - 9:00 PM", "Cozy college favorite with pasta and pizza."});
-        rows.add(new String[] {"Mellow Mushroom", "Pizza", "11:00 AM - 10:00 PM", "Famous for stone-baked pizza and laid-back vibes."});
-        rows.add(new String[] {"Taco Bell", "Mexican", "9:00 AM - 1:00 AM", "Fast, affordable, and open late."});
-        rows.add(new String[] {"Sushi Garden", "Japanese", "12:00 PM - 9:00 PM", "Fresh rolls, rice bowls, and quick service."});
-        rows.add(new String[] {"Cafe 13", "American", "8:00 AM - 10:00 PM", "Popular breakfast and burger spot near campus."});
-        rows.add(new String[] {"Burrito Union", "Mexican", "10:00 AM - 9:00 PM", "Build-your-own burritos and casual Tex-Mex."});
-        rows.add(new String[] {"Pita Bowl", "Mediterranean", "11:00 AM - 8:00 PM", "Healthy bowls, wraps, and salads."});
-        rows.add(new String[] {"Cabo Fish Taco", "Seafood", "11:00 AM - 9:00 PM", "Tacos, rice bowls, and a lively local favorite."});
-
+        final double unknown = Double.NaN;
         Data data = new Data();
-        data.parseYelpData(rows);
+        // name, tags, price, latitude, longitude, address, hours, bio
+        data.addSample("The Cellar", "Italian", 2, 37.23089, -80.41510, "302 N Main St, Blacksburg",
+                "11:00 AM - 9:00 PM", "Cozy college favorite with pasta and pizza.");
+        data.addSample("Mellow Mushroom", "Pizza", 2, 37.22822, -80.41242, "207 S Main St, Blacksburg",
+                "11:00 AM - 10:00 PM", "Famous for stone-baked pizza and laid-back vibes.");
+        data.addSample("Taco Bell", "Mexican", 1, 37.23377, -80.41845, "608 N Main St, Blacksburg",
+                "9:00 AM - 1:00 AM", "Fast, affordable, and open late.");
+        data.addSample("Cabo Fish Taco", "Seafood, Mexican", 2, 37.22884, -80.41315, "117 S Main St, Blacksburg",
+                "11:00 AM - 9:00 PM", "Tacos, rice bowls, and a lively local favorite.");
+        data.addSample("Sushi Garden", "Japanese", 0, unknown, unknown, "",
+                "12:00 PM - 9:00 PM", "Fresh rolls, rice bowls, and quick service.");
+        data.addSample("Cafe 13", "American", 0, unknown, unknown, "",
+                "8:00 AM - 10:00 PM", "Popular breakfast and burger spot near campus.");
+        data.addSample("Burrito Union", "Mexican", 0, unknown, unknown, "",
+                "10:00 AM - 9:00 PM", "Build-your-own burritos and casual Tex-Mex.");
+        data.addSample("Pita Bowl", "Mediterranean", 0, unknown, unknown, "",
+                "11:00 AM - 8:00 PM", "Healthy bowls, wraps, and salads.");
+
+        data.addSample("Chipotle", "Mexican", 1, 37.23106, -80.41525, "314 N Main St, Blacksburg", "", "");
+        data.addSample("Zeppoli's Italian Restaurant", "Italian", 2, 37.23393, -80.43176,
+                "810 University City Blvd, Blacksburg", "", "");
+        data.addSample("Not Your Mama's Pasta", "Italian", 2, 37.22759, -80.41191, "301 S Main St, Blacksburg", "", "");
+        data.addSample("Sushi Factory", "Japanese, Sushi", 2, 37.23394, -80.43442,
+                "801 University City Blvd, Blacksburg", "", "");
+        data.addSample("Hefun", "Japanese, Sushi, Ramen", 2, 37.23207, -80.41600, "428 N Main St, Blacksburg", "", "");
+        data.addSample("Mezeh Mediterranean Grill", "Mediterranean", 1, 37.23258, -80.43241,
+                "616 University City Blvd, Blacksburg", "", "");
+        data.addSample("Souvlaki", "Mediterranean, Greek", 1, 37.22990, -80.41627, "201 College Ave, Blacksburg", "", "");
+        data.addSample("Happy Wok", "Chinese", 1, 37.23026, -80.41575, "141 College Ave, Blacksburg", "", "");
+        data.addSample("Junzi", "Chinese", 1, 37.23359, -80.42183, "220 Gilbert St, Blacksburg", "", "");
+        data.addSample("India Garden", "Indian", 2, 37.23473, -80.42177, "210 Prices Fork Rd, Blacksburg", "", "");
+        data.addSample("Namaste Kitchen", "Indian, Nepalese", 2, 37.23051, -80.41536, "239 N Main St, Blacksburg", "", "");
+        data.addSample("Yeah Siam", "Thai", 2, 37.23028, -80.41415, "104 Jackson St, Blacksburg", "", "");
+        data.addSample("Lefty's", "American, Burgers", 2, 37.21520, -80.40106, "1410 S Main St, Blacksburg", "", "");
+        data.addSample("Cook Out", "American, Burgers", 1, 37.21704, -80.40074, "1311 S Main St, Blacksburg", "", "");
+        data.addSample("Subway", "Sandwiches", 1, 37.23512, -80.43329, "860 University City Blvd, Blacksburg", "", "");
+        data.addSample("Mission BBQ", "BBQ", 2, 37.16468, -80.42058, "2585 Market St NE, Christiansburg", "", "");
+        data.addSample("Sandro's Pizzeria Italian Restaurant", "Pizza, Italian", 2, 37.16783, -80.42065,
+                "2775 Market St NE, Christiansburg", "", "");
+        data.addSample("Gran Rodeo Mexican Restaurant", "Mexican", 2, 37.16280, -80.41924,
+                "200 Laurel St, Christiansburg", "", "");
+        data.addSample("Panda Express", "Chinese", 1, 37.16298, -80.42796,
+                "250 Peppers Ferry Rd NW, Christiansburg", "", "");
+        data.addSample("Five Guys", "American, Burgers", 1, 37.15843, -80.42117,
+                "95 Spradlin Farm Dr, Christiansburg", "", "");
         return data;
+    }
+
+    /**
+     * Builds one sample restaurant and adds it.
+     *
+     * @param tagList comma-separated tags, e.g. "Pizza, Italian"
+     */
+    private void addSample(String name, String tagList, int price, double latitude, double longitude,
+            String address, String hoursOpen, String bio) {
+        ArrayList<Tag> sampleTags = new ArrayList<>();
+        for (String tagName : tagList.split(",")) {
+            sampleTags.add(createTag(tagName));
+        }
+        addRestaurant(new Restaurant(name, sampleTags, price, latitude, longitude, address), hoursOpen, bio);
     }
 
     public static ArrayList<Restaurant> buildYelpAreaDataset() {

@@ -39,5 +39,16 @@ public class YelpJsonDataTest {
         assertEquals("The Cellar", businesses.get(0).getName());
         assertTrue(businesses.get(0).hasTag(new Tag("Italian")));
         assertTrue(businesses.get(0).hasTag(new Tag("Pizza")));
+        assertEquals(2, businesses.get(0).getPriceLevel());
+        assertTrue(businesses.get(0).hasLocation());
+    }
+
+    @Test
+    public void badJsonGivesNoRestaurantsInsteadOfCrashing() {
+        Data data = new Data();
+        assertTrue(data.parseYelpJson(null).isEmpty());
+        assertTrue(data.parseYelpJson("").isEmpty());
+        assertTrue(data.parseYelpJson("not json at all").isEmpty());
+        assertTrue(data.parseYelpJson("{\"businesses\": [").isEmpty());
     }
 }

@@ -93,6 +93,13 @@ public class RestaurantTest {
     }
 
     @Test
+    public void clearDistanceMakesItUnknownAgain() {
+        chilis.setDistance(2.5);
+        chilis.clearDistance();
+        assertTrue(Double.isNaN(chilis.getDistance()));
+    }
+
+    @Test
     public void badDistancesAreRejected() {
         assertThrows(IllegalArgumentException.class, () -> chilis.setDistance(-5));
         assertThrows(IllegalArgumentException.class, () -> chilis.setDistance(Double.NaN));

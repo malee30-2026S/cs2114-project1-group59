@@ -8,6 +8,7 @@ import java.util.HashMap;
  */
 public class Profile {
     private String name;
+    private String email;
     private int age;
     private String location;
     private final ArrayList<String> dietaryRestrictions;
@@ -33,6 +34,7 @@ public class Profile {
      */
     public Profile(String name, int age, String location) {
         this.name = name == null ? "" : name.trim();
+        this.email = "";
         this.age = age;
         this.location = location == null ? "" : location.trim();
         this.dietaryRestrictions = new ArrayList<>();
@@ -58,6 +60,17 @@ public class Profile {
 
     public void setName(String name) {
         this.name = name == null ? "" : name.trim();
+    }
+
+    /**
+     * @return the user's email, which Database uses to save their ratings
+     */
+    public String getEmail() {
+        return email;
+    }
+
+    public void setEmail(String email) {
+        this.email = email == null ? "" : email.trim();
     }
 
     public int getAge() {

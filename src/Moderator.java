@@ -13,9 +13,15 @@ public class Moderator
     private static Set<String> ALLOWED_PHOTO_EXTENSIONS =
         new HashSet<>(Arrays.asList(".jpg", ".jpeg", ".png"));
 
+    /** Longest input accepted, so huge pastes can't overflow anything. */
+    private static final int MAX_INPUT_LENGTH = 500;
+
     /**
+     * Checks that a string is valid: not blank, not too long, and has at
+     * least one letter or number (so "#*@^" is rejected).
+     *
      * @param input
-     *            the input Checks that a string is valid
+     *            the input to check
      * @return boolean
      */
     public boolean validateInput(String input)
@@ -25,11 +31,35 @@ public class Moderator
             return false;
         }
         String trimmed = input.trim();
-        if (trimmed.isEmpty())
+        if (trimmed.isEmpty() || trimmed.length() > MAX_INPUT_LENGTH)
         {
             return false;
         }
-        return true;
+        for (char c : trimmed.toCharArray())
+        {
+            if (Character.isLetterOrDigit(c))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+
+    /**
+     * Checks that an email looks like name@domain.tld
+     *
+     * @param email
+     *            the email to check
+     * @return boolean
+     */
+    public boolean validateEmail(String email)
+    {
+        if (!validateInput(email))
+        {
+            return false;
+        }
+        return email.trim().matches("[^@\\s]+@[^@\\s]+\\.[A-Za-z]{2,}");
     }
 
 

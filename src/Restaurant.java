@@ -135,6 +135,14 @@ public class Restaurant {
     }
 
     /**
+     * Marks the distance as unknown again, e.g. when the user picks a
+     * location we don't have coordinates for.
+     */
+    public void clearDistance() {
+        this.distance = Double.NaN;
+    }
+
+    /**
      * @return 1 ($) through 4 ($$$$), or 0 if unknown
      */
     public int getPriceLevel() {

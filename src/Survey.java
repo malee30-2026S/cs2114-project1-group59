@@ -5,6 +5,7 @@ import java.util.ArrayList;
  */
 public class Survey {
     private String name;
+    private String email;
     private int age;
     private String location;
     private final ArrayList<String> dietaryRestrictions;
@@ -16,6 +17,7 @@ public class Survey {
 
     public Survey(String name, int age, String location) {
         this.name = name == null ? "" : name.trim();
+        this.email = "";
         this.age = age;
         this.location = location == null ? "" : location.trim();
         this.dietaryRestrictions = new ArrayList<>();
@@ -28,6 +30,14 @@ public class Survey {
 
     public void setName(String name) {
         this.name = name == null ? "" : name.trim();
+    }
+
+    public String getEmail() {
+        return email;
+    }
+
+    public void setEmail(String email) {
+        this.email = email == null ? "" : email.trim();
     }
 
     public int getAge() {
@@ -87,6 +97,7 @@ public class Survey {
      */
     public Profile toProfile() {
         Profile profile = new Profile(name, age, location);
+        profile.setEmail(email);
         for (String restriction : dietaryRestrictions) {
             profile.addDietaryRestriction(restriction);
         }
@@ -113,6 +124,7 @@ public class Survey {
             throw new IllegalArgumentException("Profile cannot be null");
         }
         this.name = profile.getName();
+        this.email = profile.getEmail();
         this.age = profile.getAge();
         this.location = profile.getLocation();
         this.dietaryRestrictions.clear();
