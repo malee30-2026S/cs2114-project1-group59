@@ -18,6 +18,8 @@
 *.zip
 *.tar.gz
 *.rar
+# ...except the libraries in lib/ that the project needs to run
+!lib/*.jar
 
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
